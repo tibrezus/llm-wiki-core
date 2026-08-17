@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Validate a fetched RIG JSON against the module's schema.
 
-Usage: validate-rig.py <rig.json>
+Usage: validate-rig.py <rig.db | rig.json>
+
+rig.db (canonical SQLite artifact) is loaded via the rig package's
+roundtrip reader; rig.json (legacy/compat) is loaded directly. Both are
+checked against the same schema.
 
 Exits 0 if valid, 1 if invalid. Errors are printed to stderr.
 """
@@ -9,6 +13,10 @@ Exits 0 if valid, 1 if invalid. Errors are printed to stderr.
 import json
 import sys
 from pathlib import Path
+
+_ACTION_DIR = (Path(__file__).resolve().parent.parent.parent /
+               ".github" / "actions" / "repo-map")
+sys.path.insert(0, str(_ACTION_DIR))
 
 _SCHEMA_PATH = Path(__file__).resolve().parent.parent.parent / "schemas" / "repo-map.schema.yaml"
 
@@ -21,11 +29,18 @@ def _load_schema():
 
 def validate_rig(rig_path):
     errors = []
+    rig_path = Path(rig_path)
     try:
-        with open(rig_path) as f:
-            rig = json.load(f)
+        if rig_path.suffix == ".db":
+            from rig.db import read_db
+            rig = read_db(rig_path)
+        else:
+            with open(rig_path) as f:
+                rig = json.load(f)
     except json.JSONDecodeError as e:
         return [f"Invalid JSON: {e}"]
+    except Exception as e:
+        return [f"Cannot load RIG: {e}"]
 
     schema = _load_schema()
 

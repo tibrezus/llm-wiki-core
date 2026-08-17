@@ -72,9 +72,14 @@ COMPONENTS=$(python3 -c "import json;print(len(json.load(open('$RIG_FILE'))['com
 log "  RIG: $COMPONENTS components ($RIG_FILE)"
 
 # ── Step 2: Generate model.c4 ────────────────────────────────────────
-log "Step 2/4: Generating model.c4 (deterministic, from RIG + code comments)…"
+log "Step 2/4: Generating model.c4 (deterministic, from rig.db + code comments)…"
 MODEL_FILE="$OUTPUT_DIR/model.c4"
-python3 "$TOOLS_DIR/rig-to-c4.py" "$RIG_FILE" --source-dir "$SOURCE_DIR" -o "$MODEL_FILE"
+RIG_DB="${RIG_FILE%.json}.db"
+if [ ! -f "$RIG_DB" ]; then
+    log "  FATAL: $RIG_DB missing — emit-rig.py must produce it alongside the JSON"
+    exit 1
+fi
+python3 "$TOOLS_DIR/rig-to-c4.py" "$RIG_DB" --source-dir "$SOURCE_DIR" -o "$MODEL_FILE"
 log "  model.c4: $(wc -l < "$MODEL_FILE") lines"
 
 # ── Step 3: Generate Mermaid diagrams ─────────────────────────────────
