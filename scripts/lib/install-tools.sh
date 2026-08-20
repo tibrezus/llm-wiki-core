@@ -61,7 +61,27 @@ install_remark_deps() {
     echo "::endgroup::"
 }
 
+# tree-sitter grammars (QMD deps) fall back to source builds when no prebuild
+# matches the runner (musl containers, new node ABIs); that needs make + a
+# C++ compiler. GitHub-hosted images have them; slim self-hosted runner
+# containers may not.
+ensure_native_build_tools() {
+    if command -v make >/dev/null 2>&1 && command -v c++ >/dev/null 2>&1; then
+        return
+    fi
+    echo "::group::Install native build tools (make, g++)"
+    if command -v apk >/dev/null 2>&1; then
+        apk add --no-cache make g++
+    elif command -v apt-get >/dev/null 2>&1; then
+        apt-get update -qq && apt-get install -y -qq make g++ || sudo apt-get install -y -qq make g++
+    else
+        echo "::warning::make/c++ missing and no known package manager — tree-sitter source builds will fail"
+    fi
+    echo "::endgroup::"
+}
+
 install_qmd() {
+    ensure_native_build_tools
     echo "::group::Install QMD"
     npm install -g @tobilu/qmd
     if ! command -v bun &>/dev/null; then
