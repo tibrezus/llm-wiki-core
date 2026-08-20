@@ -37,9 +37,17 @@ qmd status
 
 echo ""
 echo "--- search test ---"
-result=$(qmd search "test query" --json -n 1 2>/dev/null || echo "")
+# The test term is derived from the corpus itself: a fixed query like
+# "test query" cannot be answered by a small or freshly-bootstrapped wiki.
+term=$(awk -F': *' '/^title:/ {print $2; exit}' wiki/*/*.md 2>/dev/null | head -1)
+if [ -z "$term" ]; then
+    echo "::error::No wiki pages found — add at least one page under wiki/ before the index can be verified"
+    exit 1
+fi
+echo "Searching for: $term"
+result=$(qmd search "$term" --json -n 1 2>/dev/null || echo "")
 if [ "$result" = "[]" ] || [ -z "$result" ]; then
-    echo "::error::QMD search returned no results for test query"
+    echo "::error::QMD search returned no results for '$term'"
     exit 1
 fi
 echo "QMD search verification passed"
