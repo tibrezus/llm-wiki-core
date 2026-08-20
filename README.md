@@ -4,7 +4,8 @@ A shared tooling module for **LLM Wiki** instances — persistent, compounding
 knowledge bases maintained by LLM agents. This repository provides three layers:
 
 1. **Wiki tooling** — schema, lint, CI pipelines, bootstrap, health checks
-2. **GitOps controller** — Kubernetes-native RIG generation + LLM agent pipeline
+2. **RIG generation** — the universal code-graph extractor, consumed by
+   project CI (package-registry architecture pipeline)
 3. **Agent skill** — the `llm-wiki` skill for the pi.dev harness
 
 ## Architecture
@@ -12,45 +13,40 @@ knowledge bases maintained by LLM agents. This repository provides three layers:
 ```text
 ┌─ Module (this repo) ──────────────────────────────────────────┐
 │                                                               │
-│  Wiki Tooling          GitOps Controller        Agent Skill    │
-│  ─────────────         ─────────────────        ───────────    │
-│  instance/AGENTS.md    deploy/chart/            .agents/skills/wiki/SKILL.md │
-│  schemas/              deploy/scripts/                         │
-│  scripts/              Dockerfile                               │
-│  tests/                .github/actions/repo-map/               │
+│  Wiki Tooling          RIG Generation            Agent Skill    │
+│  ─────────────         ────────────              ───────────    │
+│  instance/AGENTS.md    .github/actions/repo-map/  .agents/skills/wiki/SKILL.md │
+│  schemas/              (used by project CI:       Dockerfile    │
+│  scripts/               rig.db package pipeline)                │
+│  tests/                                                       │
 │                                                               │
-│  Used by wiki           Used by k8s-config      Used by pi     │
-│  instances (submodule)  (Helm chart)            (--skill)      │
+│  Used by wiki           Used by project CI       Used by pi     │
+│  instances (submodule)  (workflows)              (--skill)      │
 └───────────────────────────────────────────────────────────────┘
+```
+
+> **The GitOps controller is retired.** The in-cluster operator (WikiMap
+> CRD, CronJob reconcile loop, Dapr, Valkey, PVC cache, GLM agent-sync) was
+> removed from this module and from k8s-config — superseded by the
+> package-registry pipeline below. The auto-update loop it provided will be
+> reimplemented cleanly later. The `Dockerfile` stays: the published image is
+> reused by platform components (e.g. the fork-maintenance conflict-resolver).
+
+## Package-Registry Architecture Pipeline
+
+Project CI owns its graph end-to-end (reference implementation: rhesadox's
+`.forgejo/workflows/arch.yml`):
+
 ```text
+project CI:
+  1. emit-rig (this module's repo-map action) → rig.db + rig.json + model.c4
+  2. publish as an immutable Forgejo package (version = commit SHA)
+  3. wiki stage: package → Mermaid + pages → project wiki
+  4. kb stage:   package → raw/arch/<project>/ → LLM wiki instance
 
-### Operator pattern separation
-
-- **This module** owns **build logic**: how to generate RIGs, validate diagrams,
-  transform inputs into documentation. Ships the Helm chart + scripts + Dockerfile.
-- **k8s-config** owns **runtime logic**: which repos map to which wikis
-  (WikiMap CR instances), Flux sources, secrets, network policies.
-
-### Runtime: KEDA + Dapr + PVC Cache
-
-The controller runs as a **KEDA ScaledJob** — scale-to-zero when idle, scale
-up on cron trigger. Each pod gets:
-
-- **Dapr sidecar** — state store + pub/sub abstraction (Valkey backend).
-  The agent uses `localhost:3500` HTTP API; never talks to Valkey directly.
-  Enables sub-ms skip checks (`dapr_load`) instead of full clone+emit.
-- **PVC cache** (local-path) — bare git clones, Go module cache, npm cache.
-  First run clones; subsequent runs `git fetch` (sub-second vs 5-10s clone).
-- **CI self-healing loop** — after the agent pushes, monitors CI. If CI fails,
-  re-invokes the agent with `ci-consistency.sh` + `ci-lint.sh` to fix and re-push.
-- **Event subscriber** (always-on Deployment) — consumes the `wiki.docs.updated`
-  pub/sub event published at the end of every successful reconcile and records a
-  Kubernetes Event (`reason: DocsSynced`) on the source `WikiMap`, making the
-  pipeline observable via `kubectl get events`. First consumer of the event bus.
-
-All four layers are independent Helm chart toggles (`keda.enabled`,
-`dapr.enabled`, `cache.enabled`, `subscriber.enabled`) with graceful
-degradation when absent.
+Any consumer can fetch the exact graph for a SHA; the wiki never touches the
+source tree.
+```
 
 ## Two Documentation Workflows
 
@@ -60,47 +56,6 @@ Every wiki instance supports two workflows:
 |----------|----------|-----|-------------|-------------|
 | **LC4** (Architecture) | LikeC4 → Mermaid | Yes | `arch-sync` | Documenting a project's architecture from code |
 | **Generic** | Mermaid only | No | `update` | Documenting concepts, guides, reference from raw sources |
-
-## GitOps RIG Pipeline
-
-The controller runs in Kubernetes and automatically generates documentation:
-
-```text
-Project push → Flux sources artifact → CronJob reconciles WikiMap CRs:
-
-  LC4 workflow:                     Generic workflow:
-  1. emit-<lang>.sh → rig.json      1. copy source → raw/<project>/
-  2. push rig.json to wiki          2. push to wiki
-  3. LLM: arch-sync (GLM-5.2)      3. LLM: update (GLM-5.2)
-     → model.c4 + Mermaid              → wiki pages + Mermaid
-```text
-
-WikiMap CR examples:
-
-```yaml
-# LC4 (architecture docs)
-apiVersion: llm-wiki.dev/v1alpha1
-kind: WikiMap
-spec:
-  workflow: lc4
-  source:
-    repo: https://github.com/me/my-service
-    language: go
-  destination:
-    wikiRepo: git@github.com:me/my-wiki.git
-    projectDir: raw/arch/my-service
-
-# Generic (general docs)
-apiVersion: llm-wiki.dev/v1alpha1
-kind: WikiMap
-spec:
-  workflow: generic
-  source:
-    repo: https://github.com/me/my-docs
-  destination:
-    wikiRepo: git@github.com:me/my-wiki.git
-    projectDir: raw/my-docs
-```text
 
 ## File Layout
 
@@ -134,23 +89,8 @@ spec:
 │       ├── install-tools.sh        # Tool installer (likec4, mmdc, etc.)
 │       └── puppeteer-config.json   # Headless Chromium config for mmdc
 │
-├── deploy/                         # GitOps controller (Helm chart + scripts)
-│   ├── chart/                      # The operator Helm chart
-│   │   ├── Chart.yaml
-│   │   ├── values.yaml
-│   │   └── templates/
-│   │       ├── crd-wikimap.yaml    # WikiMap CRD (llm-wiki.dev/v1alpha1)
-│   │       ├── cronjob.yaml        # Reconciliation CronJob
-│   │       ├── role.yaml           # RBAC (read wikimaps + gitrepositories)
-│   │       ├── rolebinding.yaml
-│   │       ├── serviceaccount.yaml
-│   │       └── _helpers.tpl
-│   └── scripts/
-│       ├── reconcile.sh            # Deterministic: download → emit/copy → push
-│       ├── agent-sync.sh           # Interpretive: LLM (GLM-5.2) → docs update
-│       └── add-wikimap.sh          # One-command project onboarding
-│
-├── Dockerfile                      # Controller image (Go + Python3 + Node22 + pi + likec4)
+├── Dockerfile                      # Controller image (pi + git + go + jq + kubectl) — the published
+│                                   # image is reused by platform components (conflict-resolver)
 │
 ├── .github/actions/repo-map/       # Universal RIG generator (also used as standalone GitHub Action)
 │   ├── action.yml                  # Composite Action dispatch
@@ -196,17 +136,12 @@ git submodule add https://github.com/tibrezus/llm-wiki.git .llm-wiki
 bash .llm-wiki/scripts/bootstrap.sh
 ```text
 
-### Add a project to the GitOps pipeline
+### Add a project to the architecture pipeline
 
-```bash
-# In k8s-config, run the add-wikimap helper:
-/path/to/llm-wiki/deploy/scripts/add-wikimap.sh my-service \
-  https://github.com/me/my-service go --push
-
-# Or for generic documentation:
-/path/to/llm-wiki/deploy/scripts/add-wikimap.sh my-docs \
-  https://github.com/me/my-docs --workflow generic --push
-```text
+The GitOps operator (add-wikimap.sh / WikiMap CRs) was retired. The current
+pattern is per-project CI publishing the graph as a package — see rhesadox's
+`.forgejo/workflows/arch.yml` (publish rig.db → package registry; wiki/kb
+stages render from the package).text
 
 ### Develop the module
 

@@ -13,9 +13,9 @@ three layers:
 
 1. **Wiki tooling** — schema, lint, CI pipelines, bootstrap, health checks.
    Consumed by wiki instances as a git submodule at `.llm-wiki/`.
-2. **GitOps controller** — Helm chart + scripts + Dockerfile. Installed in
-   Kubernetes via k8s-config to automatically generate RIGs and run the LLM
-   agent pipeline.
+2. **RIG generation** — the universal code-graph extractor
+   (`.github/actions/repo-map/`), consumed by project CI to publish graph
+   packages (the package-registry architecture pipeline).
 3. **Agent skill** — `.agents/skills/wiki/SKILL.md` (git submodule of `tibrezus/agents`), synced to `~/.agents/skills/wiki/`.
    Guides the LLM when operating on wiki content.
 
@@ -77,22 +77,8 @@ scripts/                            # Wiki instance tooling
     generate.sh                     # File generators (CI, package.json, etc.)
     install-tools.sh                # Tool installer (likec4, mmdc, etc.)
     puppeteer-config.json           # Headless Chromium config
-deploy/                             # GitOps controller
-  chart/                            # Helm chart (the operator)
-    Chart.yaml
-    values.yaml
-    templates/
-      crd-wikimap.yaml              # WikiMap CRD (llm-wiki.dev/v1alpha1)
-      cronjob.yaml                  # Reconciliation CronJob
-      role.yaml                     # RBAC (wikimaps + wikimaps/status + gitrepos)
-      rolebinding.yaml
-      serviceaccount.yaml
-      _helpers.tpl
-  scripts/
-    reconcile.sh                    # Deterministic: download → emit/copy → push
-    agent-sync.sh                   # LLM step: pi --print (GLM-5.2 via ZAI)
-    add-wikimap.sh                  # One-command project onboarding
-Dockerfile                          # Controller image (Go + Python3 + Node22 + pi + likec4)
+Dockerfile                          # Controller image (pi + git + go + jq + kubectl) — kept: the
+                                    # published image is reused by other platform components
 .github/actions/repo-map/           # Universal RIG generator (also usable as GitHub Action)
   action.yml                        # Composite Action dispatch
   emit-rig.sh                       # Shell wrapper
@@ -126,202 +112,24 @@ Module self-checks: `npm run check` (lint + test).
 Both share the same page format, entity types, naming, and cross-referencing
 rules defined in `instance/AGENTS.md`.
 
-## GitOps RIG Controller
+## Architecture Pipeline (package registry)
 
-### Architecture (operator pattern)
-
-- **This module** ships the Helm chart (CRD, ScaledJob/CronJob, RBAC), the controller
-  scripts (`reconcile.sh`, `agent-sync.sh`, `ci-monitor.sh`), the universal emitter
-  (`emit-rig.py`), and the Dockerfile. This is **build logic** — HOW to generate
-  RIGs and documentation.
-- **k8s-config** installs the chart via HelmRelease and creates WikiMap CR
-  instances + Flux GitRepository CRs. This is **runtime logic** — WHICH repos
-  map WHERE.
-
-### Runtime: KEDA + Dapr + PVC Cache
-
-The controller runs as a **KEDA ScaledJob** (scale-to-zero when idle). Each pod
-gets a **Dapr sidecar** (state store + pub/sub via Valkey) and a **persistent
-PVC cache** (bare git clones, Go/npm module caches). A separate **always-on
-event-subscriber Deployment** consumes the `wiki.docs.updated` topic (Redis
-pub/sub is fire-and-forget, so the consumer must be online continuously — it
-cannot live inside the scale-to-zero controller).
+The GitOps controller (WikiMap CRD + CronJob reconcile + Dapr/Valkey + PVC
+cache + GLM agent-sync) is **retired** — removed from this module and from
+k8s-config. Its job is now owned by project CI:
 
 ```text
-KEDA trigger (cron every 30m)
-  │
-  ├── Init: mkdir cache dirs on PVC
-  │
-  └── Controller Pod (transient, 2 containers):
-       ├── daprd (Dapr sidecar) ──→ Valkey
-       │     localhost:3500/v1.0/state/statestore/{key}
-       │     localhost:3500/v1.0/publish/pubsub/{topic}
-       │
-       └── rig-controller:
-            ├── dapr_load → skip if revision unchanged (sub-ms)
-            ├── clone_or_fetch_wiki() → git fetch on PVC (sub-second)
-            ├── emit-rig.py → GOMODCACHE on PVC (no re-download)
-            ├── pi --print → agent generates docs
-            ├── ci-monitor.sh → polls CI status
-            ├── dapr_save revision + hash + component count
-            ├── dapr_publish "wiki.docs.updated"  ──┐
-            └── POST /v1.0/shutdown → pod terminates │
-                                                     ▼  (Valkey pub/sub)
-  Event-subscriber Deployment (always-on, 1 replica):
-       ├── daprd (Dapr sidecar) — subscribed to wiki.docs.updated
-       └── event-subscriber.py:
-            ├── receives each doc-sync event
-            └── records a Kubernetes Event (reason: DocsSynced) on the
-                source WikiMap → `kubectl get events` / `kubectl describe
-                wikimap <name>`
+project CI (reference: rhesadox .forgejo/workflows/arch.yml):
+  1. emit-rig (this module's repo-map tools) → rig.db + rig.json + model.c4
+  2. publish as an immutable Forgejo package (version = commit SHA)
+  3. wiki stage: package → Mermaid + pages → project wiki
+  4. kb stage:   package → raw/arch/<project>/ → LLM wiki instance
 ```
 
-This is step 1 of the move from cron-batch to event-driven operation: the
-subscriber is the first real consumer of the event bus, proving the Dapr
-pub/sub path end-to-end and giving operators a visible audit trail. Later
-steps add a durable ledger and a KEDA trigger driven by these events.
-
-Helm chart values (independent toggles):
-
-| Value | Effect |
-|-------|--------|
-| `keda.enabled` | ScaledJob (event-driven, scale-to-zero) vs CronJob (fallback) |
-| `dapr.enabled` | Sidecar injection (state store + pub/sub abstraction) |
-| `cache.enabled` | PVC mount at /cache (bare clones, module caches) |
-| `sshKey.enabled` | SSH key for non-GitHub wiki push (Codeberg, Forgejo) |
-| `subscriber.enabled` | Always-on event-subscriber Deployment (consumes `wiki.docs.updated`) |
-
-When Dapr is absent, all `dapr_*` calls are no-ops (graceful degradation), and
-the event subscriber has nothing to consume (it still runs but receives no
-events).
-
-### Event subscriber (`event-subscriber.py`)
-
-The `wiki.docs.updated` event published at the end of every successful
-reconcile needs a consumer, or it is silently dropped (Redis pub/sub retains
-messages in a stream only as long as a consumer is subscribed). The subscriber
-is a stdlib-only Python HTTP server deployed as an always-on Deployment:
-
-- **Discovery**: Dapr reads `GET /dapr/subscribe` and subscribes the app to
-  `pubsub` / `wiki.docs.updated`, delivering each event to `POST /events`.
-- **Acknowledgement**: the handler returns `{"status":"SUCCESS"}` per the Dapr
-  pub/sub app-callback contract — any other status is treated as retriable and
-  causes an infinite redelivery loop.
-- **Effect**: for each event it creates a Kubernetes `Event` (reason
-  `DocsSynced`) on the source `WikiMap` CR via the in-cluster API, surfacing
-  every doc sync as `kubectl get events` / `kubectl describe wikimap <name>`.
-- **RBAC**: needs `events` `create`/`patch` (added to the controller `Role`).
-- **Dual-stack**: binds `::` (IPv6 with `IPV6_V6ONLY=0`) so kubelet's IPv6 pod-IP
-  liveness probe and Dapr's `127.0.0.1` loopback delivery both work.
-
-### WikiMap CRD (`llm-wiki.dev/v1alpha1`)
-
-```yaml
-spec:
-  workflow: lc4 | generic       # default: lc4
-  source:
-    repo: <url-or-gitrepository-name>
-    branch: main
-    language: go                 # hint for field alignment; auto-detected by emit-rig.py
-  destination:
-    wikiRepo: <git-url>
-    wikiBranch: main
-    projectDir: raw/arch/<project>  # or raw/<project> for generic
-status:
-  lastProcessedRevision: <sha>
-  lastRigSha256: <hash>
-```
-
-### reconcile.sh (deterministic phase)
-
-1. Lists WikiMap CRs via `kubectl get wikimaps`
-2. For each: checks **Dapr state** first (`dapr_load NAME:processed_revision`),
-   skips if unchanged (sub-millisecond, no clone/emit needed)
-3. Falls back to K8s status check if Dapr absent
-4. Resolves Flux artifact revision, downloads if needed
-5. Fetches wiki repo via PVC bare clone (`clone_or_fetch_wiki`) —
-   first run clones, subsequent runs `git fetch` (sub-second)
-6. **LC4**: runs `emit-rig.py` → `rig.json`, validates, pushes to wiki
-7. **Generic**: copies source to `raw/<project>/`, pushes to wiki
-8. Saves state to Dapr (`dapr_save`) + patches `WikiMap.status`
-
-### agent-sync.sh (LLM phase — runs if content changed)
-
-Uses `pi --print` with the llm-wiki skill and GLM-5.2 (via ZAI):
-
-- **LC4**: reads updated RIG, compares with `model.c4`, identifies
-  added/deprecated/changed components, updates model + Mermaid, commits
-- **Generic**: reads new source material, creates/updates wiki pages with
-  Mermaid, commits
-
-After the agent pushes, a **CI self-healing loop** (up to 3 retries):
-
-1. `ci-monitor.sh` polls the CI run triggered by the push
-2. If CI fails, re-invokes the agent with:
-   - `ci-consistency.sh` first (gating check — fixes drift via `bootstrap.sh`)
-   - `ci-lint.sh` for remaining errors
-3. Agent fixes, pushes, CI monitored again
-
-State is saved to Dapr after each phase: agent commit SHA, CI status,
-component count, edge count. The Dapr sidecar is shut down at the end
-(`POST /v1.0/shutdown`) so the pod terminates cleanly.
-
-Env vars: `LLM_WIKI_ZAI_TOKEN`, `LLM_WIKI_GITHUB_TOKEN`,
-`LLM_WIKI_CODEBERG_TOKEN`, `LLM_WIKI_RZC_TOKEN`,
-`CACHE_DIR` (/cache), `DAPR_STATE_STORE` (statestore), `DAPR_PUBSUB` (pubsub).
-
-### Controller image
-
-```bash
-docker build -t ghcr.io/tibrezus/llm-wiki-controller:0.1.0 .
-docker push ghcr.io/tibrezus/llm-wiki-controller:0.1.0
-```
-
-Contains: Go, Python3, Node.js 22, pi.dev harness, likec4, kubectl, git.
-
-### Adding a new language extractor
-
-The RIG generator is modular: each build system is a self-contained extractor
-in `rig/extractors/`. To add support for a new language/build system:
-
-1. **Create `rig/extractors/<lang>.py`** — a class extending `Extractor`:
-
-   ```python
-   from rig.builder import RIGBuilder
-   from rig.model import Component
-   from rig.extractors.base import Extractor
-
-   class MyLangExtractor(Extractor):
-       name = "my-build-system"
-       build_file = "MyBuild.txt"
-
-       @staticmethod
-       def detects() -> bool:
-           from pathlib import Path
-           return Path("MyBuild.txt").exists()
-
-       def extract(self, builder: RIGBuilder) -> None:
-           # Parse build file, create Components/Tests/Runners,
-           # register them via builder.add_component(...), etc.
-           # Express dependencies as NAMES; builder resolves to IDs.
-           ...
-   ```
-
-2. **Register it** in `emit-rig.py` — add the class to `EXTRACTOR_CLASSES`
-   (before `GenericExtractor`).
-3. **Add the toolchain** to the Dockerfile if the extractor needs a compiler/runtime.
-4. **`npm run check`**; commit; rebuild image.
-
-Key conventions:
-
-- Components express `depends_on` and `external_packages` as **names** (strings).
-  The `RIGBuilder.build()` method resolves names → IDs. Extractors never track
-  ID maps themselves.
-- Evidence should cite **actual build-file line numbers**, not just `:1`. Use
-  `builder.evidence_at(build_file, text, offset)` or `builder.evidence(f"{file}:{line}")`.
-- Emit **runners** for test/build commands (e.g., `zig build test`, `cargo test`).
-- Emit **aggregators** for meta-targets (`go-build-all`, `zig-build`).
-- Populate **component artifacts** (output paths) for executables.
+The auto-update loop (agent reacting to graph changes and updating wiki prose)
+will be reimplemented cleanly later (harmostes). The Dockerfile stays — the
+published controller image is reused by platform components (fork-maintenance
+conflict-resolver).
 
 ## RIG Pipeline (arXiv:2601.10112 / Spade)
 
@@ -413,11 +221,17 @@ The schema enforces `additionalProperties: false` on every node type. Fields:
 
 ### Vendoring
 
-The same `emit-rig.py` + `rig/` package is used in three places:
+The same `emit-rig.py` + `rig/` package is used in two places:
 
-1. **GitHub Action** (`.github/actions/repo-map/`) — project CI publishes RIG as a release asset
-2. **harmostes** (`plugins/rig-emit/`) — in-cluster controller generates RIG deterministically
-3. **llm-wiki controller** (`deploy/`) — legacy GitOps controller
+1. **GitHub Action** (`.github/actions/repo-map/`) — project CI publishes RIG
+   as a package (the rhesadox `arch.yml` pattern: rig.db in the package
+   registry, wiki/kb stages render from the package)
+2. **harmostes** (`plugins/rig-emit/`) — in-cluster plugin generates RIG
+   deterministically
+
+(The legacy GitOps controller — `deploy/` — was the third consumer; it has
+been removed. The auto-update loop it provided will be reimplemented
+ cleanly later.)
 
 Changes to the module must be synced to the harmostes vendor copy:
 `cp -r .github/actions/repo-map/{emit-rig.py,emit-rig.sh,rig} <harmostes>/plugins/rig-emit/`
@@ -457,13 +271,16 @@ npm run check    # markdownlint + remark + pytest
 3. Smoke-test: `bash scripts/new-wiki.sh /tmp/wiki-smoke`.
 4. `npm run check`; push on `main`.
 
-### Evolving the controller (`deploy/`)
+### The retired GitOps controller
 
-1. Edit scripts (`reconcile.sh`, `agent-sync.sh`) or chart templates.
-2. Rebuild: `docker build -t ghcr.io/tibrezus/llm-wiki-controller:0.1.0 .`
-3. Push image: `docker push ghcr.io/tibrezus/llm-wiki-controller:0.1.0`
-4. Flux picks up chart changes via the `llm-wiki-module` GitRepository.
-5. Force reconcile: `flux reconcile helmrelease llm-wiki-controller -n llm-wiki`
+The in-cluster operator (`deploy/`: WikiMap CRD, CronJob reconcile loop,
+Dapr state/pubsub, Valkey, PVC cache, GLM agent-sync) was **removed** — its
+k8s-config deployment was retired and the architecture pipeline moved to the
+**package-registry pattern** (project CI publishes rig.db as an immutable
+package; wiki stages render from it — see the rhesadox `arch.yml`). The
+auto-update loop will be reimplemented cleanly later. The `Dockerfile` stays:
+the published controller image is reused by other platform components (e.g.
+the fork-maintenance conflict-resolver).
 
 ## Propagating a Module Change to Existing Instances
 
