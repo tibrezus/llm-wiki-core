@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Bootstrap a new LLM Wiki instance.
 # Run from the instance repo root after adding the llm-wiki submodule:
-#   git submodule add https://github.com/tibrezus/llm-wiki.git .llm-wiki
+#   git submodule add https://github.com/tibrezus/llm-wiki-core.git .llm-wiki
 #   bash .llm-wiki/scripts/bootstrap.sh
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

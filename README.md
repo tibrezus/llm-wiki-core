@@ -131,7 +131,7 @@ Or manually:
 ```bash
 mkdir my-wiki && cd my-wiki
 git init && git switch -c main
-git submodule add https://github.com/tibrezus/llm-wiki.git .llm-wiki
+git submodule add https://github.com/tibrezus/llm-wiki-core.git .llm-wiki
 # Edit wiki.config.yml, then:
 bash .llm-wiki/scripts/bootstrap.sh
 ```text

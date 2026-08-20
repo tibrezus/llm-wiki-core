@@ -69,7 +69,7 @@ require_config() {
 require_submodule() {
     if [ ! -d "$INSTANCE_ROOT/.llm-wiki" ]; then
         echo "ERROR: Submodule not found at .llm-wiki/"
-        echo "Run: git submodule add https://github.com/tibrezus/llm-wiki.git .llm-wiki"
+        echo "Run: git submodule add https://github.com/tibrezus/llm-wiki-core.git .llm-wiki"
         exit 1
     fi
 }

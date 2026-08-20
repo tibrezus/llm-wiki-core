@@ -4,7 +4,7 @@ title: LLM Wiki — Shared Tooling Module
 
 # AGENTS.md — llm-wiki (Shared Tooling Module)
 
-> **You are in the `tibrezus/llm-wiki` module repository — NOT a wiki instance.**
+> **You are in the `tibrezus/llm-wiki-core` module repository — NOT a wiki instance.**
 > This repo will never contain `wiki/`, `raw/`, `wiki.config.yml`, `index.md`, or
 > `log.md`. Do not look for them and do not follow instance workflows here.
 

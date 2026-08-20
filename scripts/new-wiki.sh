@@ -19,7 +19,7 @@ set -euo pipefail
 #
 # Run from anywhere (e.g. from a local clone of the module, or piped from curl):
 #   bash /path/to/llm-wiki/scripts/new-wiki.sh my-wiki
-#   curl -fsSL https://raw.githubusercontent.com/tibrezus/llm-wiki/main/scripts/new-wiki.sh \
+#   curl -fsSL https://raw.githubusercontent.com/tibrezus/llm-wiki-core/main/scripts/new-wiki.sh \
 #     | bash -s my-wiki
 
 RED='\033[0;31m'
@@ -31,7 +31,7 @@ info()  { echo -e "${GREEN}[new-wiki]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[new-wiki]${NC} $*"; }
 error() { echo -e "${RED}[new-wiki]${NC} $*" >&2; exit 1; }
 
-DEFAULT_MODULE_URL="https://github.com/tibrezus/llm-wiki.git"
+DEFAULT_MODULE_URL="https://github.com/tibrezus/llm-wiki-core.git"
 
 TARGET_DIR="${1:-}"
 MODULE_URL="${2:-$DEFAULT_MODULE_URL}"
