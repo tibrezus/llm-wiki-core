@@ -1,4 +1,4 @@
-# llm-wiki
+# llm-wiki-core
 
 A shared tooling module for **LLM Wiki** instances — persistent, compounding
 knowledge bases maintained by LLM agents. This repository provides three layers:
