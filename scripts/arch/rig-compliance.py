@@ -7,7 +7,7 @@ artifacts.  This script audits any RIG JSON against the six dimensions the
 paper prescribes and produces a compliance scorecard.
 
 Usage:
-    rig-compliance.py <rig.json> [--strict]
+    rig-compliance.py <rig.db> [--strict]
     rig-compliance.py --all <dir-containing-raw/arch/*/>
 
 Exit codes:
@@ -16,7 +16,6 @@ Exit codes:
     2  --strict mode and any check is not 100%
 """
 
-import json
 import sys
 import argparse
 from pathlib import Path
@@ -422,9 +421,17 @@ ALL_CHECKS = [
 ]
 
 
+def _load_rig(rig_path: str) -> dict:
+    """Load a RIG from rig.db (canonical)."""
+    _ACTION_DIR = (Path(__file__).resolve().parent.parent.parent /
+                   ".github" / "actions" / "repo-map")
+    sys.path.insert(0, str(_ACTION_DIR))
+    from rig.db import load_rig
+    return load_rig(Path(rig_path))
+
+
 def audit_rig(rig_path: str) -> Scorecard:
-    with open(rig_path) as f:
-        rig = json.load(f)
+    rig = _load_rig(rig_path)
 
     repo_name = rig.get("repository", {}).get("name", "?")
     card = Scorecard(rig_path=rig_path, repository=repo_name)
@@ -495,17 +502,17 @@ def format_compact(card: Scorecard) -> str:
 
 def main():
     parser = argparse.ArgumentParser(description="RIG Compliance Auditor (paper: arXiv:2601.10112)")
-    parser.add_argument("rig_path", nargs="?", help="Path to a rig.json file")
-    parser.add_argument("--all", metavar="DIR", help="Audit all rig.json files under DIR (e.g. wiki root)")
+    parser.add_argument("rig_path", nargs="?", help="Path to a rig.db file")
+    parser.add_argument("--all", metavar="DIR", help="Audit all rig.db files under DIR (e.g. wiki root)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Show details for passing checks too")
     parser.add_argument("--strict", action="store_true", help="Exit 2 if any check is below 100%%")
     args = parser.parse_args()
 
     if args.all:
         base = Path(args.all)
-        rig_files = sorted(base.glob("**/rig.json"))
+        rig_files = sorted(base.glob("**/rig.db"))
         if not rig_files:
-            print(f"No rig.json files found under {base}", file=sys.stderr)
+            print(f"No rig.db files found under {base}", file=sys.stderr)
             sys.exit(1)
 
         print(f"Found {len(rig_files)} RIG file(s)\n")

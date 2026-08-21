@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Architecture graph pipeline — fetch + validate RIG JSON.
+# Architecture graph pipeline — fetch + validate rig.db.
 #
 # For every project declared under `arch.projects` in wiki.config.yml:
-#   1. fetch the project-published RIG JSON from its rig_url
-#   2. validate it against schemas/repo-map.schema.yaml
-#   3. write it verbatim to raw/arch/<name>.rig.json
+#   1. fetch the project-published rig.db from its rig_url
+#   2. validate it (roundtrip + schema + evidence rules)
+#   3. write it verbatim to raw/arch/<name>/rig.db
 #
-# The RIG JSON is the single source of truth for the LLM-authored LC4
-# diagrams. It is committed to raw/ (immutable). No transformation, no
-# rollup, no extraction — the project owns graph generation entirely.
+# rig.db is the single source of truth (machine interface — query it with
+# rig-query.py, never load it into context). It is committed to raw/
+# (immutable). No transformation, no rollup, no extraction — the project
+# owns graph generation entirely.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"          # .../scripts/arch
 SCRIPTS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"           # .../scripts
@@ -45,7 +46,7 @@ while IFS=$'\x1f' read -r NAME RIG_URL TOKEN_ENV; do
     echo "=== Project: $NAME ==="
     PROJECT_DIR="$RAW_ARCH/$NAME"
     mkdir -p "$PROJECT_DIR"
-    OUT="$PROJECT_DIR/rig.json"
+    OUT="$PROJECT_DIR/rig.db"
 
     [ -n "$RIG_URL" ] || { echo "::error::$NAME: rig_url is required"; FAILED=1; continue; }
 

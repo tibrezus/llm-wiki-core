@@ -1,14 +1,14 @@
 name: "Repo Map (RIG)"
-description: "Produce a Repository Intelligence Graph (RIG) JSON from the repo's build system. Publishes as a Release asset for wiki consumption."
+description: "Produce a Repository Intelligence Graph (rig.db, SQLite + FTS5) from the repo's build system. Query it with rig-query.py — never load the graph into context. Publishes as a Release asset for wiki consumption."
 
 inputs:
   language:
     description: "Primary programming language (go, typescript, python, rust, ...)"
     required: true
   output:
-    description: "Output file path (default: repo-map.json)"
+    description: "Output file path (default: rig.db)"
     required: false
-    default: "repo-map.json"
+    default: "rig.db"
 
 runs:
   using: "composite"
@@ -21,9 +21,7 @@ runs:
       run: |
         # Universal emitter (emit-rig.sh → emit-rig.py). Auto-detects every build
         # system in the repo; the language input is a hint, not a dispatch key.
-        # This is the SAME emitter the in-cluster harmostes / llm-wiki controller
-        # uses, so the project-CI RIG and the wiki RIG stay consistent and share
-        # every emitter fix — no per-language drift.
+        # The output is the canonical rig.db — the single queryable artifact.
         EMITTER="${GITHUB_ACTION_PATH}/emit-rig.sh"
         if [ ! -f "$EMITTER" ]; then
           echo "::error::Universal RIG emitter (emit-rig.sh) not found in the action."

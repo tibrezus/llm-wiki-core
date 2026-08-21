@@ -127,6 +127,8 @@ class TestRigDb(unittest.TestCase):
         self.assertEqual(hits, [("parseConfig",)])
 
     def test_load_rig_dispatch(self):
+        # The reader still understands legacy rig.json (committed in older
+        # instances) — writers emit db only.
         rig = _sample_rig()
         dbp = self.dir / "rig.db"
         jp = self.dir / "rig.json"
@@ -134,9 +136,19 @@ class TestRigDb(unittest.TestCase):
         jp.write_text(json.dumps(_strip_volatile(rig)))
         self.assertEqual(rig_db.load_rig(dbp), rig_db.load_rig(jp))
 
+    def test_json_input_rejected(self):
+        # rig-to-c4 refuses non-.db input — the JSON serialization is dead.
+        jp = self.dir / "rig.json"
+        jp.write_text(json.dumps(_sample_rig()))
+        r = subprocess.run(
+            [sys.executable, str(ACTION_DIR / "rig-to-c4.py"), str(jp)],
+            capture_output=True, text=True)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("rig.db", r.stderr)
 
-class TestModelParity(unittest.TestCase):
-    """model.c4 from rig.db must equal model.c4 from rig.json."""
+
+class TestModelGeneration(unittest.TestCase):
+    """rig-to-c4 reads rig.db (the only input) and must be deterministic."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -153,9 +165,7 @@ class TestModelParity(unittest.TestCase):
         rig = _sample_rig()
         rig["repository"]["language"] = "zig"
         self.db_path = self.dir / "rig.db"
-        self.json_path = self.dir / "rig.json"
         rig_db.write_db(rig, self.db_path)
-        self.json_path.write_text(json.dumps(rig))
         # Populate symbols + docs exactly like emit-rig.py does.
         from rig import symbols as rig_symbols
         rig_db.add_symbols(self.db_path, rig_symbols.extract_symbols(rig, self.dir))
@@ -179,11 +189,6 @@ class TestModelParity(unittest.TestCase):
             capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout
-
-    def test_json_db_parity(self):
-        from_json = self._run(str(self.json_path), "--source-dir", str(self.dir))
-        from_db = self._run(str(self.db_path), "--source-dir", str(self.dir))
-        self.assertEqual(from_json, from_db)
 
     def test_model_is_time_deterministic(self):
         """No timestamp in the header — regeneration must be diff-free."""

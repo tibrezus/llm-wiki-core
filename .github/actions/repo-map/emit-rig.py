@@ -12,7 +12,10 @@ Follows the RIG standard (arXiv:2601.10112, github.com/Greenfuze/Spade):
 components are BUILD TARGETS, evidence is build-system-backed, every node
 MUST have evidence.
 
-Usage: emit-rig.py <output.json> [--language hint] [--no-validate]
+The output is the canonical rig.db (SQLite + FTS5). Query it with
+rig-query.py — never load the whole graph into context.
+
+Usage: emit-rig.py <output.db> [--language hint] [--no-validate]
 """
 
 from __future__ import annotations
@@ -55,7 +58,7 @@ EXTRACTOR_CLASSES: list[type[Extractor]] = [
 
 def main():
     parser = argparse.ArgumentParser(description="Universal RIG generator (v2)")
-    parser.add_argument("output", help="Output JSON file path")
+    parser.add_argument("output", help="Output rig.db path")
     parser.add_argument("--language", default=None, help="Language hint (auto-detected if omitted)")
     parser.add_argument("--no-validate", action="store_true", help="Skip validation")
     args = parser.parse_args()
@@ -106,14 +109,13 @@ def main():
                 print(f"  ERROR: {e}", file=sys.stderr)
             sys.exit(1)
 
-    # Write output
-    with open(args.output, "w") as f:
-        json.dump(rig, f, indent=2)
-
-    # Write the canonical SQLite database alongside the JSON.
-    # rig.db is queryable + compact (FTS5 symbol search, per-component
-    # queries); rig.json stays as the compat/export view.
-    db_path = Path(args.output).with_suffix(".db")
+    # Write the canonical SQLite database — the ONLY graph artifact.
+    # Queryable + compact (FTS5 symbol search, per-component queries);
+    # consumers answer structural questions with targeted queries instead
+    # of loading the graph into context.
+    db_path = Path(args.output)
+    if db_path.suffix != ".db":
+        db_path = db_path.with_suffix(".db")
     rig_db.write_db(rig, db_path)
     source_root = Path(".").resolve()
     syms = rig_symbols.extract_symbols(rig, source_root)
@@ -144,6 +146,12 @@ def main():
             except OSError:
                 continue
     rig_db.add_files(db_path, file_rows)
+
+    n_components = len(rig["components"])
+    n_files = sum(len(c.get("source_files", [])) for c in rig["components"])
+    print(f"[emit-rig] rig.db: {db_path} "
+          f"({n_components} components, {n_files} files, {len(syms)} symbols)",
+          file=sys.stderr)
 
     total_edges = sum(len(c.get("depends_on_ids", [])) for c in rig["components"])
     print(

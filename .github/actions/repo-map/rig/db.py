@@ -560,7 +560,8 @@ def _write_tests(con, rig: dict) -> None:
     con.executemany(
         "INSERT OR IGNORE INTO test_covers VALUES (?,?,?)",
         [(t["id"], c, j) for t in tests
-         for j, c in enumerate(t.get("components_being_tested_ids", []))])
+         for j, c in enumerate(t.get("covers_ids")
+                            or t.get("components_being_tested_ids", []))])
     con.executemany(
         "INSERT OR IGNORE INTO test_files VALUES (?,?,?)",
         [(t["id"], f, j) for t in tests

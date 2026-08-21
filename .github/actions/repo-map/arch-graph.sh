@@ -3,14 +3,13 @@ set -euo pipefail
 
 # arch-graph.sh — Full deterministic architecture pipeline for project CI.
 #
-# Pipeline: source → RIG → model.c4 → Mermaid → wiki pages
+# Pipeline: source → rig.db → model.c4 → Mermaid → Architecture.md
 #
 # Runs in the current source directory (already checked out by CI). Produces:
-#   <output-dir>/rig.json
-#   <output-dir>/model.c4
-#   <output-dir>/*.mmd            (raw Mermaid exports)
-#   <output-dir>/Architecture.md  (wiki-ready, renders natively on GitHub/Codeberg)
-#   <output-dir>/Components/*.md  (one page per component view, if any)
+#   <output-dir>/rig.db                (machine interface — query, don't read)
+#   <output-dir>/model.c4              (derived view; input to likec4)
+#   <output-dir>/*.mmd                 (raw Mermaid exports)
+#   <output-dir>/wiki/Architecture.md  (the ONE human-facing page, everything merged)
 #
 # This is the SAME deterministic pipeline harmostes runs, extracted into a
 # single script that any project's CI can call. No LLM, no k8s, no external
@@ -61,24 +60,19 @@ log() { echo "[arch-graph] $*"; }
 
 # ── Step 1: Generate RIG ─────────────────────────────────────────────
 log "Step 1/4: Generating RIG (language=${LANGUAGE:-auto})…"
-RIG_FILE="$OUTPUT_DIR/rig.json"
+RIG_DB="$OUTPUT_DIR/rig.db"
 if [ -n "$LANGUAGE" ]; then
-    ( cd "$SOURCE_DIR" && bash "$TOOLS_DIR/emit-rig.sh" "$RIG_FILE" "$LANGUAGE" )
+    ( cd "$SOURCE_DIR" && bash "$TOOLS_DIR/emit-rig.sh" "$RIG_DB" "$LANGUAGE" )
 else
-    ( cd "$SOURCE_DIR" && bash "$TOOLS_DIR/emit-rig.sh" "$RIG_FILE" )
+    ( cd "$SOURCE_DIR" && bash "$TOOLS_DIR/emit-rig.sh" "$RIG_DB" )
 fi
 
-COMPONENTS=$(python3 -c "import json;print(len(json.load(open('$RIG_FILE'))['components']))" 2>/dev/null || echo "?")
-log "  RIG: $COMPONENTS components ($RIG_FILE)"
+COMPONENTS=$(python3 -c "import sqlite3;print(sqlite3.connect('$RIG_DB').execute('SELECT COUNT(*) FROM components').fetchone()[0])" 2>/dev/null || echo "?")
+log "  RIG: $COMPONENTS components ($RIG_DB)"
 
 # ── Step 2: Generate model.c4 ────────────────────────────────────────
 log "Step 2/4: Generating model.c4 (deterministic, from rig.db + code comments)…"
 MODEL_FILE="$OUTPUT_DIR/model.c4"
-RIG_DB="${RIG_FILE%.json}.db"
-if [ ! -f "$RIG_DB" ]; then
-    log "  FATAL: $RIG_DB missing — emit-rig.py must produce it alongside the JSON"
-    exit 1
-fi
 python3 "$TOOLS_DIR/rig-to-c4.py" "$RIG_DB" --source-dir "$SOURCE_DIR" -o "$MODEL_FILE"
 log "  model.c4: $(wc -l < "$MODEL_FILE") lines"
 
@@ -108,13 +102,15 @@ fi
 log "  Mermaid: $MMD_COUNT diagram(s)"
 
 # ── Step 4: Build wiki pages ──────────────────────────────────────────
-log "Step 4/4: Building wiki pages…"
+log "Step 4/4: Building Architecture.md…"
 python3 "$TOOLS_DIR/build-wiki-pages.py" "$MMD_DIR" \
     --output-dir "$OUTPUT_DIR/wiki" \
     --project-name "$PROJECT_NAME" \
-    --rig-file "$RIG_FILE" \
-    --model-file "$MODEL_FILE"
+    --rig-file "$RIG_DB" \
+    --model-file "$MODEL_FILE" \
+    ${CI_MD:+--ci-file "$CI_MD"}
 
 log "Done. Output: $OUTPUT_DIR"
-log "  Wiki pages: $OUTPUT_DIR/wiki/"
+log "  Machine artifact: $OUTPUT_DIR/rig.db"
+log "  Human page:       $OUTPUT_DIR/wiki/Architecture.md"
 echo "{\"status\":\"ok\",\"output_dir\":\"$OUTPUT_DIR\",\"components\":$COMPONENTS,\"mermaid\":true,\"mmd_count\":$MMD_COUNT}"

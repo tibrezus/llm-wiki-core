@@ -120,10 +120,15 @@ k8s-config. Its job is now owned by project CI:
 
 ```text
 project CI (reference: rhesadox .forgejo/workflows/arch.yml):
-  1. emit-rig (this module's repo-map tools) → rig.db + rig.json + model.c4
+  1. emit-rig (this module's repo-map tools) → rig.db
   2. publish as an immutable Forgejo package (version = commit SHA)
-  3. wiki stage: package → Mermaid + pages → project wiki
-  4. kb stage:   package → raw/arch/<project>/ → LLM wiki instance
+     — exactly two artifacts: rig.db (machine) + Architecture.md (human,
+       merged: rendered views + source map + LikeC4 model + CI registry)
+  3. wiki stage: package → Architecture.md → project wiki
+  4. kb stage:   package → raw/arch/<project>/ (rig.db + derived model.c4) → LLM wiki instance
+
+model.c4 is DERIVED from rig.db wherever needed (rig-to-c4.py) and never
+transported. rig.json was removed — the db is the only serialization.
 ```
 
 The auto-update loop (agent reacting to graph changes and updating wiki prose)
@@ -145,12 +150,12 @@ harmostes (k8s) — the documentation engine
 ┌───────────────────────────────────────────────────────────────────┐
 │ rig-emit plugin (deterministic)                                   │
 │  ├─ clone project source repo                                     │
-│  ├─ emit-rig.py    → rig.json                                     │
+│  ├─ emit-rig.py    → rig.db (SQLite + FTS5)                       │
 │  ├─ rig-to-c4.py   → model.c4                                     │
 │  └─ likec4 gen mermaid → *.mmd                                    │
 │                                                                   │
 │ agent (probabilistic — LLM via LiteLLM)                           │
-│  ├─ read rig.json (what changed)                                  │
+│  ├─ query rig.db (rig tool: overview/component/search)            │
 │  ├─ embed *.mmd into wiki pages                                   │
 │  ├─ write C4-level prose (context/container/component)            │
 │  ├─ offload code-level details to platform wiki (gh/git)          │

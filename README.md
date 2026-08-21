@@ -39,10 +39,15 @@ Project CI owns its graph end-to-end (reference implementation: rhesadox's
 
 ```text
 project CI:
-  1. emit-rig (this module's repo-map action) → rig.db + rig.json + model.c4
+  1. emit-rig (this module's repo-map action) → rig.db
   2. publish as an immutable Forgejo package (version = commit SHA)
-  3. wiki stage: package → Mermaid + pages → project wiki
-  4. kb stage:   package → raw/arch/<project>/ → LLM wiki instance
+     — exactly two artifacts: rig.db (machine) + Architecture.md (human)
+  3. wiki stage: package → Architecture.md → project wiki
+  4. kb stage:   package → raw/arch/<project>/ (rig.db + derived model.c4) → LLM wiki instance
+
+rig.db is the machine interface — query it (rig-query.py / the pi `rig`
+tool), never load it into context. Architecture.md is the single human-facing
+page: rendered C4 views, source map, LikeC4 model, CI registry — all merged.
 
 Any consumer can fetch the exact graph for a SHA; the wiki never touches the
 source tree.

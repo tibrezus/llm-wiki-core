@@ -1,19 +1,15 @@
 #!/usr/bin/env python3
 """rig-to-c4.py — Deterministic RIG → LikeC4 model generator.
 
-Reads a rig.db (canonical) or rig.json (legacy) and produces a model.c4
+Reads a rig.db (the canonical SQLite artifact) and produces a model.c4
 where every element is derived from the RIG. Source files that carry a
 top-of-file doc comment (Zig //!, Go //, C /* */, Python docstrings) get
 the comment extracted verbatim into the C4 component description — no LLM,
-no hallucination, fully reproducible.
-
-When reading rig.db, file docs and exported symbols are served from the DB
-(precomputed at emit time); when reading rig.json they are extracted from
-source on the fly. Both paths share ONE implementation (rig/symbols.py), so
-model.c4 is byte-identical either way — the golden-parity test enforces it.
+no hallucination, fully reproducible. File docs and exported symbols are
+served from the DB (precomputed at emit time).
 
 Usage:
-    rig-to-c4.py <rig.db | rig.json> [--source-dir <path>] [-o <output.c4>]
+    rig-to-c4.py <rig.db> [--source-dir <path>] [-o <output.c4>]
 
 If --source-dir is given (or source files exist in the CWD), doc comments
 are extracted from the actual source files. Otherwise, descriptions are
@@ -338,7 +334,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Deterministic RIG → LikeC4 model generator."
     )
-    parser.add_argument("rig_input", help="Path to rig.db (canonical) or rig.json (legacy)")
+    parser.add_argument("rig_input", help="Path to rig.db (canonical SQLite artifact)")
     parser.add_argument(
         "--source-dir", "-s",
         help="Path to the source repo (for extracting code comments). "
@@ -356,38 +352,29 @@ def main() -> None:
     if not rig_path.exists():
         print(f"Error: {rig_path} not found", file=sys.stderr)
         sys.exit(1)
+    if rig_path.suffix != ".db":
+        print(f"Error: {rig_path}: the canonical artifact is rig.db "
+              f"(SQLite). The JSON serialization was removed.", file=sys.stderr)
+        sys.exit(1)
 
     rig = rig_db.load_rig(rig_path)
 
     file_data: dict[str, tuple[str, list[str]]] | None = None
-    if rig_path.suffix == ".db":
-        # Serve docs + exports from the DB (precomputed at emit time).
-        import sqlite3
-        con = sqlite3.connect(rig_path)
-        try:
-            file_data = {
-                r[0]: (r[1] or "", r[2].split(", ") if r[2] else [])
-                for r in con.execute(
-                    "SELECT f.path, f.doc, ("
-                    "  SELECT GROUP_CONCAT(s.signature, ', ' ORDER BY s.seq) "
-                    "  FROM symbols s WHERE s.file = f.path) FROM files f")
+    # Serve docs + exports from the DB (precomputed at emit time).
+    import sqlite3
+    con = sqlite3.connect(rig_path)
+    try:
+        file_data = {
+            r[0]: (r[1] or "", r[2].split(", ") if r[2] else [])
+            for r in con.execute(
+                "SELECT f.path, f.doc, ("
+                "  SELECT GROUP_CONCAT(s.signature, ', ' ORDER BY s.seq) "
+                "  FROM symbols s WHERE s.file = f.path) FROM files f")
         }
-        finally:
-            con.close()
+    finally:
+        con.close()
 
     source_dir = Path(args.source_dir) if args.source_dir else Path.cwd()
-
-    # Check if source files are actually accessible (only matters when we
-    # are NOT serving from the DB)
-    if file_data is None:
-        test_files = [
-            source_dir / sf
-            for c in rig.get("components", [])[:3]
-            for sf in c.get("source_files", [])[:1]
-        ]
-        if not any(f.exists() for f in test_files):
-            # Source files not accessible — disable comment extraction
-            source_dir = None
 
     c4_text = generate_c4(rig, source_dir, file_data)
 

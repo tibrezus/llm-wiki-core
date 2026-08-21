@@ -91,11 +91,23 @@ def _base_rig():
     }
 
 
+def _write_rig_to(rig: dict, path: Path) -> None:
+    """Write a RIG dict to a rig.db at an explicit path."""
+    _ACTION_DIR = Path(__file__).resolve().parent.parent / ".github" / "actions" / "repo-map"
+    sys.path.insert(0, str(_ACTION_DIR))
+    from rig import db as rig_db
+    rig_db.write_db(rig, path)
+
+
 def _write_rig(rig: dict) -> str:
-    """Write a RIG dict to a temp file and return the path."""
-    fd, path = tempfile.mkstemp(suffix=".json")
-    with os.fdopen(fd, "w") as f:
-        json.dump(rig, f)
+    """Write a RIG dict to a temp rig.db and return the path."""
+    _ACTION_DIR = Path(__file__).resolve().parent.parent / ".github" / "actions" / "repo-map"
+    sys.path.insert(0, str(_ACTION_DIR))
+    from rig import db as rig_db
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    os.unlink(path)
+    rig_db.write_db(rig, Path(path))
     return path
 
 
@@ -273,13 +285,13 @@ class TestScorecardIntegration(unittest.TestCase):
         os.unlink(path)
 
     def test_cli_all_mode(self):
-        """--all should find multiple rig.json files."""
+        """--all should find multiple rig.db files."""
         import subprocess
         with tempfile.TemporaryDirectory() as tmpdir:
             for name in ("proj-a", "proj-b"):
                 projdir = Path(tmpdir) / name
                 projdir.mkdir()
-                (projdir / "rig.json").write_text(json.dumps(_base_rig()))
+                _write_rig_to(_base_rig(), projdir / "rig.db")
 
             result = subprocess.run(
                 [sys.executable, str(SCRIPTS_DIR / "rig-compliance.py"), "--all", tmpdir],
@@ -304,10 +316,14 @@ class TestEnhancedValidator(unittest.TestCase):
         os.unlink(path)
 
     def test_validator_catches_duplicate_ids(self):
+        # write_db itself enforces UNIQUE component ids (IntegrityError);
+        # the validator check is exercised through a legacy JSON file.
         import subprocess
         rig = _base_rig()
         rig["components"][1]["id"] = "comp-1"
-        path = _write_rig(rig)
+        fd, path = tempfile.mkstemp(suffix=".json")
+        with os.fdopen(fd, "w") as f:
+            json.dump(rig, f)
         result = subprocess.run(
             [sys.executable, str(SCRIPTS_DIR / "validate-rig.py"), path],
             capture_output=True, text=True,
