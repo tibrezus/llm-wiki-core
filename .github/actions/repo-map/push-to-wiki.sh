@@ -96,6 +96,7 @@ rm -f "$WIKI_DIR"/Component---*.md  # old format (flat per-component pages)
 rm -f "$WIKI_DIR/Architecture.md"   # the merged page (only generated page now)
 rm -f "$WIKI_DIR/C4-Model.md"       # old format (merged into Architecture.md)
 rm -f "$WIKI_DIR/CI.md"             # old format (merged into Architecture.md)
+rm -f "$WIKI_DIR/rig.db"            # machine artifact — never belongs in a wiki
 rm -rf "$WIKI_DIR/raw"  # artifacts now live in the main repo
 
 log "syncing pages from $PAGES_DIR…"
