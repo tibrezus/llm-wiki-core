@@ -92,9 +92,10 @@ fi
 # formats don't accumulate). We only remove patterns we generate.
 log "cleaning up previous generated files…"
 rm -rf "$WIKI_DIR/Components"  # old format (subdirectory — caused 500)
-rm -f "$WIKI_DIR"/Component---*.md  # current format (flat)
-rm -f "$WIKI_DIR/Architecture.md"
-rm -f "$WIKI_DIR/C4-Model.md"
+rm -f "$WIKI_DIR"/Component---*.md  # old format (flat per-component pages)
+rm -f "$WIKI_DIR/Architecture.md"   # the merged page (only generated page now)
+rm -f "$WIKI_DIR/C4-Model.md"       # old format (merged into Architecture.md)
+rm -f "$WIKI_DIR/CI.md"             # old format (merged into Architecture.md)
 rm -rf "$WIKI_DIR/raw"  # artifacts now live in the main repo
 
 log "syncing pages from $PAGES_DIR…"
