@@ -156,6 +156,62 @@ class TestComplianceChecks(unittest.TestCase):
         self.assertEqual(result.severity, "error")
         self.assertEqual(result.score, 0.0)
 
+    # ── Maintainability: symbol duplication (DRY) ──
+
+    @staticmethod
+    def _sym(name, comp, lang="zig", kind="fn"):
+        return {"name": name, "kind": kind,
+                "signature": f"{kind} {name}", "file": f"src/{comp}.zig",
+                "component_id": comp, "component": comp, "language": lang}
+
+    def test_symbol_duplication_pass_without_map(self):
+        result = rig_compliance.check_symbol_duplication(self.rig)
+        self.assertEqual(result.severity, "pass")
+        self.assertIn("no symbol table", result.detail)
+
+    def test_symbol_duplication_pass_clean(self):
+        self.rig["_code_map"] = [
+            self._sym("uniqueOne", "comp-1"),
+            self._sym("uniqueTwo", "comp-2"),
+        ]
+        result = rig_compliance.check_symbol_duplication(self.rig)
+        self.assertEqual(result.severity, "pass")
+        self.assertEqual(result.score, 1.0)
+
+    def test_symbol_duplication_two_components_warn(self):
+        rows = [self._sym(f"unique{i}", "comp-1") for i in range(20)]
+        rows += [self._sym("parseThing", "comp-1"),
+                 self._sym("parseThing", "comp-2")]
+        self.rig["_code_map"] = rows
+        result = rig_compliance.check_symbol_duplication(self.rig)
+        self.assertEqual(result.severity, "warn")
+        self.assertIn("parseThing", result.detail)
+        self.assertGreater(result.score, 0.9)  # debt visible, score barely hit
+
+    def test_symbol_duplication_severe_errors(self):
+        self.rig["_code_map"] = [
+            self._sym("parseThing", "comp-1"),
+            self._sym("parseThing", "comp-2"),
+            self._sym("parseThing", "comp-3"),
+        ]
+        result = rig_compliance.check_symbol_duplication(self.rig)
+        self.assertEqual(result.severity, "error")
+        self.assertIn("SEVERE", result.detail)
+
+    def test_symbol_duplication_filters(self):
+        # blocked generic name in 3 components, builtin prefix in 2, and a
+        # cross-language pair — none of them are findings
+        self.rig["_code_map"] = [
+            self._sym("main", "comp-1"), self._sym("main", "comp-2"),
+            self._sym("main", "comp-3"),
+            self._sym("__builtin_thing", "comp-1"),
+            self._sym("__builtin_thing", "comp-2"),
+            self._sym("parseThing", "comp-1", lang="zig"),
+            self._sym("parseThing", "comp-2", lang="c"),
+        ]
+        result = rig_compliance.check_symbol_duplication(self.rig)
+        self.assertEqual(result.severity, "pass")
+
     # ── Evidence ──
 
     def test_evidence_full(self):

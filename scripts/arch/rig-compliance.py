@@ -408,10 +408,61 @@ def check_entrypoints(rig: dict) -> CheckResult:
 #  Orchestrator
 # ──────────────────────────────────────────────────────────────────────
 
+def check_symbol_duplication(rig: dict) -> CheckResult:
+    """Maintainability: cross-component symbol duplication (DRY at the graph level).
+
+    A symbol re-declared in >= rig.fitness.SEVERE_COMPONENT_SPREAD components
+    (same language, blocklist/builtins/cross-language filtered) is SEVERE —
+    error, CI fails. Two-component duplicates are warnings: visible debt,
+    one refactor ticket each (extend via `rig search`, don't duplicate).
+    """
+    _ACTION_DIR = (Path(__file__).resolve().parent.parent.parent /
+                   ".github" / "actions" / "repo-map")
+    sys.path.insert(0, str(_ACTION_DIR))
+    from rig.fitness import duplication_report
+
+    code_map = rig.get("_code_map") or []
+    if not code_map:
+        return CheckResult(
+            name="Symbol duplication (DRY)", category="maintainability",
+            severity="pass", score=1.0, measured=0, total=0,
+            detail="no symbol table in this rig (legacy serialization)",
+        )
+
+    report = duplication_report(code_map)
+    duplicated = report["duplicated"]
+    severe = report["severe"]
+    total_names = len({r["name"] for r in code_map})
+    score = 1.0 - (len(duplicated) / total_names if total_names else 0.0)
+
+    if severe:
+        names = ", ".join(
+            f"{d['name']} ({d['language']}, {d['spread']} components)"
+            for d in severe)
+        detail = f"SEVERE duplication: {names}"
+        severity = "error"
+    elif duplicated:
+        names = ", ".join(d["name"] for d in duplicated[:8])
+        more = f" (+{len(duplicated) - 8} more)" if len(duplicated) > 8 else ""
+        detail = f"{len(duplicated)} duplicated symbol(s): {names}{more}"
+        severity = "warn"
+    else:
+        detail = "No cross-component symbol duplication"
+        severity = "pass"
+
+    return CheckResult(
+        name="Symbol duplication (DRY)", category="maintainability",
+        severity=severity, score=score,
+        measured=total_names - len(duplicated), total=total_names,
+        detail=detail,
+    )
+
+
 ALL_CHECKS = [
     check_duplicate_ids,
     check_dangling_refs,
     check_circular_deps,
+    check_symbol_duplication,
     check_evidence_coverage,
     check_test_coverage,
     check_component_completeness,
@@ -422,12 +473,22 @@ ALL_CHECKS = [
 
 
 def _load_rig(rig_path: str) -> dict:
-    """Load a RIG from rig.db (canonical)."""
+    """Load a RIG from rig.db (canonical).
+
+    Also attaches ``_code_map`` (symbol rows joined to component/language)
+    for the DRY duplication check — private key, not part of the RIG spec.
+    """
     _ACTION_DIR = (Path(__file__).resolve().parent.parent.parent /
                    ".github" / "actions" / "repo-map")
     sys.path.insert(0, str(_ACTION_DIR))
     from rig.db import load_rig
-    return load_rig(Path(rig_path))
+    from rig.fitness import read_code_map
+    rig = load_rig(Path(rig_path))
+    try:
+        rig["_code_map"] = read_code_map(Path(rig_path))
+    except Exception:  # noqa: BLE001 — legacy db without symbols table
+        rig["_code_map"] = []
+    return rig
 
 
 def audit_rig(rig_path: str) -> Scorecard:
