@@ -34,16 +34,24 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-# Names too generic for name-equality to mean anything (entrypoint mains,
-# lifecycle hooks, common helpers). The review-side `rig search` still
-# catches these — this list only governs the automated gate.
+# Names too generic for name-equality to mean anything. Calibrated per
+# language idiom: entrypoint mains and lifecycle hooks (Zig), per-package
+# generic types and interfaces (Go — every package may define its own
+# Event/Result/Config; name-equality carries no duplication signal).
+# The review-side `rig search` still catches these — this list only
+# governs the automated gate.
 BLOCKED_SYMBOL_NAMES = frozenset({
-    "all", "arena", "close", "contains", "count", "counter", "deinit",
-    "empty", "err", "error", "eval", "free", "hash", "init", "label",
-    "lineOf", "main", "mark", "max", "memcpy", "min", "ms", "name",
-    "new", "nullptr", "observe", "ok", "open", "profile", "record",
-    "register", "reset", "sample", "scales", "store", "stream", "test",
-    "usage", "vec", "version",
+    "all", "arena", "Builder", "Client", "close", "Config", "contains",
+    "count", "counter", "deinit", "empty", "Entry", "err", "error",
+    "Error", "eval", "Event", "Events", "Factory", "free", "hash",
+    "Handler", "Info", "init", "Item", "Kind", "label", "lineOf",
+    "List", "main", "Manager", "mark", "max", "memcpy", "Message",
+    "Metadata", "min", "ms", "name", "new", "nullptr", "observe",
+    "ok", "open", "Option", "Options", "Payload", "profile", "Record",
+    "record", "Ref", "register", "Registry", "Request", "reset",
+    "Response", "Result", "Results", "sample", "scales", "Spec",
+    "State", "Status", "store", "stream", "String", "test", "Type",
+    "usage", "Value", "vec", "version",
 })
 
 # A symbol re-declared across this many components (same language) is

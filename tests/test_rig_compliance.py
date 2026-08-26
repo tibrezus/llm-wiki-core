@@ -199,8 +199,9 @@ class TestComplianceChecks(unittest.TestCase):
         self.assertIn("SEVERE", result.detail)
 
     def test_symbol_duplication_filters(self):
-        # blocked generic name in 3 components, builtin prefix in 2, and a
-        # cross-language pair — none of them are findings
+        # blocked generic name in 3 components, builtin prefix in 2, a
+        # cross-language pair, and Go-idiomatic per-package types — none
+        # of them are findings
         self.rig["_code_map"] = [
             self._sym("main", "comp-1"), self._sym("main", "comp-2"),
             self._sym("main", "comp-3"),
@@ -208,6 +209,12 @@ class TestComplianceChecks(unittest.TestCase):
             self._sym("__builtin_thing", "comp-2"),
             self._sym("parseThing", "comp-1", lang="zig"),
             self._sym("parseThing", "comp-2", lang="c"),
+            self._sym("Event", "comp-1", lang="go", kind="type"),
+            self._sym("Event", "comp-2", lang="go", kind="type"),
+            self._sym("Event", "comp-3", lang="go", kind="type"),
+            self._sym("Result", "comp-1", lang="go", kind="type"),
+            self._sym("Result", "comp-2", lang="go", kind="type"),
+            self._sym("Result", "comp-3", lang="go", kind="type"),
         ]
         result = rig_compliance.check_symbol_duplication(self.rig)
         self.assertEqual(result.severity, "pass")
