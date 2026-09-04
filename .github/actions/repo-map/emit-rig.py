@@ -30,6 +30,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from rig.builder import RIGBuilder
+from rig.model import Runner
 from rig.validator import validate_rig
 from rig import db as rig_db
 from rig import symbols as rig_symbols
@@ -54,6 +55,60 @@ EXTRACTOR_CLASSES: list[type[Extractor]] = [
     StandaloneCExtractor,
     GenericExtractor,  # always last — fallback
 ]
+
+
+def _add_script_runners(builder: RIGBuilder, root: Path) -> None:
+    """Declare script-based CI runners from an optional .rig-runners manifest.
+
+    The file-graph cannot see shell-script CI (GPU validation scripts, parity
+    probes, serve checks) — without this, coverage views claim those components
+    are untested. Shape (.rig-runners.json, or .rig-runners.yaml when pyyaml
+    is installed):
+
+        {"runners": [{"name": "gpu-integration",
+                      "command": ["bash", "tools/integration.sh"],
+                      "script":  "tools/integration.sh",   # must exist -> evidence
+                      "covers":  ["cuda-backend", "c-kernels"]}]}
+
+    `covers` are component names; unknown names are warned and skipped (never
+    guessed), a missing script file is an error (evidence must be truthful).
+    """
+    jpath, ypath = root / ".rig-runners.json", root / ".rig-runners.yaml"
+    if jpath.exists():
+        entries = json.loads(jpath.read_text()).get("runners", [])
+    elif ypath.exists():
+        try:
+            import yaml
+        except ImportError:
+            sys.exit(f"[emit-rig] {ypath}: pyyaml not available — use .rig-runners.json (stdlib)")
+        entries = (yaml.safe_load(ypath.read_text()) or {}).get("runners", [])
+    else:
+        return
+
+    for e in entries:
+        name = str(e.get("name", "")).strip()
+        script = str(e.get("script", "")).strip()
+        command = e.get("command") or (["bash", script] if script else [])
+        covers = list(e.get("covers") or [])
+        if not name or not script:
+            sys.exit(f"[emit-rig] .rig-runners: every runner needs at least name and script: {e}")
+        if builder.resolve(name) is not None:
+            sys.exit(f"[emit-rig] .rig-runners: '{name}' collides with an existing graph node")
+        if not (root / script).exists():
+            sys.exit(f"[emit-rig] .rig-runners: {name}: script not found: {script} (evidence must be truthful)")
+        resolved = {c for c in covers if builder.resolve(c) is not None}
+        for u in covers:
+            if u not in resolved:
+                print(f"  WARN: .rig-runners: {name}: cover '{u}' matches no component — skipped",
+                      file=sys.stderr)
+        builder.add_runner(Runner(
+            name=name,
+            arguments=[str(a) for a in command],
+            depends_on=resolved,
+            evidence=[builder.evidence(f"{script}:1")],
+        ))
+        print(f"[emit-rig] runner {name}: {script} covers {len(resolved)} component(s)",
+              file=sys.stderr)
 
 
 def main():
@@ -93,6 +148,10 @@ def main():
         n_files = sum(len(c.source_files) for c in builder.components[n_before:])
         print(f"[emit-rig]   {E.name}: +{n_comp} components, {n_files} source files",
               file=sys.stderr)
+
+    # Script-runner evidence (optional .rig-runners manifest) — after the
+    # extractors, so covers resolve against the extracted component names.
+    _add_script_runners(builder, Path("."))
 
     # Build the RIG JSON
     rig = builder.build(extractor_names)

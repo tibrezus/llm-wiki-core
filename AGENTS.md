@@ -114,6 +114,31 @@ rules defined in `instance/AGENTS.md`.
 
 ## Architecture Pipeline (package registry)
 
+### Script-runner evidence — the `.rig-runners` manifest
+
+The file-graph only sees build-target tests; shell-script CI (GPU validation
+scripts, parity probes, serve checks) is invisible, so coverage views claim
+those components are untested. A project may declare its script runners in a
+`.rig-runners.json` (or `.rig-runners.yaml` when pyyaml is available) at the
+repo root — `emit-rig.py` turns each entry into a first-class `Runner` node
+with truthful evidence:
+
+```json
+{
+  "runners": [
+    {"name": "gpu-integration",
+     "command": ["bash", "tools/integration-correctness.sh"],
+     "script": "tools/integration-correctness.sh",
+     "covers": ["cuda-backend", "c-kernels"]}
+  ]
+}
+```
+
+`covers` are component names (resolved against the extracted graph; unknown
+names warn and are skipped — never guessed). The `script` file must exist —
+it becomes the runner's evidence anchor; a missing script fails the emit.
+Runner names must not collide with existing graph node names.
+
 The GitOps controller (WikiMap CRD + CronJob reconcile + Dapr/Valkey + PVC
 cache + GLM agent-sync) is **retired** — removed from this module and from
 k8s-config. Its job is now owned by project CI:
