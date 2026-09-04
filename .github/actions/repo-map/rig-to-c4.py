@@ -120,6 +120,28 @@ def generate_c4(rig: dict, source_dir: Path | None,
     name_by_id = {c["id"]: c["name"] for c in components}
     repo = rig.get("repository", {})
 
+    # Display names must be unique, not just ids: likec4's mermaid generator
+    # keys rendered nodes by name, so two containers with the same name (e.g.
+    # a Zig project's executable and its same-named root module) collapse into
+    # one node and every edge between them renders as a self-loop. Qualify
+    # collisions with the component type: `rhesadox` vs `rhesadox (lib)`.
+    _type_abbrev = {"executable": "exe", "package_library": "lib",
+                    "static_library": "lib", "shared_library": "lib"}
+    _name_counts: dict[str, int] = {}
+    for c in components:
+        _name_counts[c["name"]] = _name_counts.get(c["name"], 0) + 1
+    display_by_id: dict[str, str] = {}
+    _seen_display: set[str] = set()
+    for c in components:
+        disp = c["name"]
+        if _name_counts[disp] > 1:
+            ctype = c.get("type", "unknown")
+            disp = f"{disp} ({_type_abbrev.get(ctype, ctype)})"
+        while disp in _seen_display:  # same name AND type — paranoid fallback
+            disp += "*"
+        _seen_display.add(disp)
+        display_by_id[c["id"]] = disp
+
     # Test coverage map
     tested_ids: set[str] = set()
     for t in rig.get("test_definitions", []):
@@ -134,10 +156,11 @@ def generate_c4(rig: dict, source_dir: Path | None,
         for cid in t.get("components_being_tested_ids", []):
             test_count[cid] = test_count.get(cid, 0) + 1
 
-    # Assign C4 identifiers
+    # Assign C4 identifiers — from the display name, so idents are both
+    # unique AND self-describing (rhesadoxExe/rhesadoxLib, not rhesadox2).
     c4_ids: dict[str, str] = {}  # comp-id → c4-ident
     for c in components:
-        c4_ids[c["id"]] = unique_ident(c["name"], used_idents)
+        c4_ids[c["id"]] = unique_ident(display_by_id[c["id"]], used_idents)
 
     lines: list[str] = []
 
@@ -197,12 +220,12 @@ def generate_c4(rig: dict, source_dir: Path | None,
     # ── Containers (one per RIG component) ────────────────────────────
     for c in components:
         c4_id = c4_ids[c["id"]]
-        c_name = c["name"]
+        c_name = display_by_id[c["id"]]
         c_type = c.get("type", "unknown")
         c_lang = c.get("programming_language", "unknown")
         srcs = c.get("source_files", [])
         deps = c.get("depends_on_ids", [])
-        dep_names = [name_by_id.get(d, d) for d in deps]
+        dep_names = [display_by_id.get(d, name_by_id.get(d, d)) for d in deps]
         is_entry = c["id"] in set(rig.get("entrypoints", []))
         has_tests = c["id"] in tested_ids
         n_tests_comp = test_count.get(c["id"], 0)
