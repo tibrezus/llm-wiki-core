@@ -39,11 +39,15 @@ from pathlib import Path
 # generic types and interfaces (Go — every package may define its own
 # Event/Result/Config; name-equality carries no duplication signal).
 # The review-side `rig search` still catches these — this list only
-# governs the automated gate.
+# governs the automated gate. Codec/find verbs (decode, encode, find)
+# calibrated on rhesadox's layer split (#1850): wire-frame decode,
+# tokenizer/KV-delta encode, and registry/tensor find are unrelated
+# capabilities that merely share an English verb across layers.
 BLOCKED_SYMBOL_NAMES = frozenset({
     "all", "arena", "Builder", "Client", "close", "Config", "contains",
-    "count", "counter", "deinit", "empty", "Entry", "err", "error",
-    "Error", "eval", "Event", "Events", "Factory", "free", "hash",
+    "count", "counter", "decode", "deinit", "empty", "encode", "Entry",
+    "err", "error", "Error", "eval", "Event", "Events", "Factory", "find",
+    "free", "hash",
     "Handler", "Info", "init", "Item", "Kind", "label", "lineOf",
     "List", "main", "Manager", "mark", "max", "memcpy", "Message",
     "Metadata", "min", "ms", "name", "new", "nullptr", "observe",
