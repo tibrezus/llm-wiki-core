@@ -175,6 +175,27 @@ class TestDuplicationReport(unittest.TestCase):
         self.assertNotIn("main", names)
         self.assertNotIn("__builtin_amdgcn_sdot4", names)
 
+    def test_blocked_codec_find_verbs_ignored(self):
+        # decode/encode/find: same English verb, unrelated capabilities per
+        # layer (rhesadox #1850 calibration — wire-frame decode vs tokenizer
+        # encode vs registry find). Name-equality across components must not
+        # raise them, no matter the spread.
+        rows = self.rows + [
+            {"name": "decode", "kind": "fn", "signature": "fn decode", "file": "a.zig", "component_id": "c1", "language": "zig", "component": "one"},
+            {"name": "decode", "kind": "fn", "signature": "fn decode", "file": "b.zig", "component_id": "c2", "language": "zig", "component": "two"},
+            {"name": "decode", "kind": "fn", "signature": "fn decode", "file": "c.zig", "component_id": "c3", "language": "zig", "component": "three"},
+            {"name": "encode", "kind": "fn", "signature": "fn encode", "file": "a.zig", "component_id": "c1", "language": "zig", "component": "one"},
+            {"name": "encode", "kind": "fn", "signature": "fn encode", "file": "b.zig", "component_id": "c2", "language": "zig", "component": "two"},
+            {"name": "encode", "kind": "fn", "signature": "fn encode", "file": "c.zig", "component_id": "c3", "language": "zig", "component": "three"},
+            {"name": "find", "kind": "fn", "signature": "fn find", "file": "a.zig", "component_id": "c1", "language": "zig", "component": "one"},
+            {"name": "find", "kind": "fn", "signature": "fn find", "file": "b.zig", "component_id": "c2", "language": "zig", "component": "two"},
+            {"name": "find", "kind": "fn", "signature": "fn find", "file": "c.zig", "component_id": "c3", "language": "zig", "component": "three"},
+        ]
+        rep = duplication_report(rows)
+        names = {d["name"] for d in rep["duplicated"]}
+        for verb in ("decode", "encode", "find"):
+            self.assertNotIn(verb, names)
+
 
 class TestRendering(unittest.TestCase):
     def setUp(self):
