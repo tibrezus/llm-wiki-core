@@ -19,6 +19,19 @@ from pathlib import Path
 # would bloat the model without helping an agent find reuse targets.
 _MAX_EXPORTS = 20
 
+# A `pub const` whose RHS is a bare @import is a re-export alias, not a
+# declaration: the symbol is defined in the imported module and merely
+# re-published here (llm-wiki-core#4 — rhesadox StDtype: one shared
+# safetensors reader, two converter mains re-exporting it, counted as
+# spread-3 "duplication"). Covers the accessor form `@import("m").Name`,
+# the whole-module form `@import("x.zig")`, and the `.*` deref form.
+# Matched on a single stripped line — the re-export idiom is a one-liner;
+# multi-line forms are left conservative (still extracted).
+_ZIG_REEXPORT_RE = re.compile(
+    r'^pub\s+const\s+[A-Za-z0-9_]+\s*=\s*@import\s*\(\s*"[^"]+"\s*\)'
+    r'(?:\s*\.\s*(?:[A-Za-z0-9_]+|\*))?\s*;\s*$'
+)
+
 
 # ── Doc comments ─────────────────────────────────────────────────────
 
@@ -156,6 +169,8 @@ def _extract_zig_exports(raw: str) -> list[tuple[int, str]]:
         if m := re.match(r"^pub\s+fn\s+([A-Za-z0-9_]*)", stripped):
             exports.append((lineno, f"fn {m.group(1)}"))
         elif m := re.match(r"^pub\s+const\s+([A-Za-z0-9_]*)", stripped):
+            if _ZIG_REEXPORT_RE.match(stripped):
+                continue  # re-export alias — declared in the imported module
             # Distinguish struct/type aliases from plain constants
             if "struct" in stripped or "type" in stripped.lower():
                 exports.append((lineno, f"type {m.group(1)}"))
