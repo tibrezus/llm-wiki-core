@@ -196,6 +196,24 @@ class TestDuplicationReport(unittest.TestCase):
         for verb in ("decode", "encode", "find"):
             self.assertNotIn(verb, names)
 
+    def test_blocked_accessor_parser_verbs_ignored(self):
+        # get/parse/add: universal collection/accessor/parser method verbs
+        # namespaced by their types (Gguf/TensorMap/Counter/Store .get,
+        # Role/Quant/Request .parse, Catalog/Registry/histogram .add —
+        # rhesadox #4 calibration). Name-equality carries no duplication
+        # signal, no matter the spread.
+        rows = self.rows
+        for verb in ("get", "parse", "add"):
+            rows = rows + [
+                {"name": verb, "kind": "fn", "signature": f"fn {verb}", "file": "a.zig", "component_id": "c1", "language": "zig", "component": "one"},
+                {"name": verb, "kind": "fn", "signature": f"fn {verb}", "file": "b.zig", "component_id": "c2", "language": "zig", "component": "two"},
+                {"name": verb, "kind": "fn", "signature": f"fn {verb}", "file": "c.zig", "component_id": "c3", "language": "zig", "component": "three"},
+            ]
+        rep = duplication_report(rows)
+        names = {d["name"] for d in rep["duplicated"]}
+        self.assertNotIn("get", names)
+        self.assertNotIn("parse", names)
+
 
 class TestRendering(unittest.TestCase):
     def setUp(self):

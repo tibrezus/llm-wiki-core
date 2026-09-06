@@ -43,15 +43,20 @@ from pathlib import Path
 # calibrated on rhesadox's layer split (#1850): wire-frame decode,
 # tokenizer/KV-delta encode, and registry/tensor find are unrelated
 # capabilities that merely share an English verb across layers.
+# Accessor/parser idiom (get, parse) calibrated on the same repo's
+# #4 failure: Gguf/TensorMap/Counter/Store .get and Role/Quant/Request
+# .parse are universal method verbs namespaced by their types — the most
+# generic name-equality noise there is. Collection verb (add) same class:
+# Catalog.add / Registry.add / histogram add are unrelated containers.
 BLOCKED_SYMBOL_NAMES = frozenset({
-    "all", "arena", "Builder", "Client", "close", "Config", "contains",
+    "add", "all", "arena", "Builder", "Client", "close", "Config", "contains",
     "count", "counter", "decode", "deinit", "empty", "encode", "Entry",
     "err", "error", "Error", "eval", "Event", "Events", "Factory", "find",
-    "free", "hash",
+    "free", "get", "hash",
     "Handler", "Info", "init", "Item", "Kind", "label", "lineOf",
     "List", "main", "Manager", "mark", "max", "memcpy", "Message",
     "Metadata", "min", "ms", "name", "new", "nullptr", "observe",
-    "ok", "open", "Option", "Options", "Payload", "profile", "Record",
+    "ok", "open", "Option", "Options", "parse", "Payload", "profile", "Record",
     "record", "Ref", "register", "Registry", "Request", "reset",
     "Response", "Result", "Results", "sample", "scales", "Spec",
     "State", "Status", "store", "stream", "String", "test", "Type",
