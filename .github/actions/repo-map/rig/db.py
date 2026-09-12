@@ -76,6 +76,7 @@ CREATE TABLE symbols(
   name TEXT NOT NULL,
   kind TEXT,
   line INTEGER,
+  line_end INTEGER,
   signature TEXT,
   doc TEXT
 );
@@ -83,6 +84,18 @@ CREATE TABLE calls(
   caller TEXT NOT NULL,
   callee TEXT NOT NULL,
   PRIMARY KEY (caller, callee)
+);
+
+-- Near-clone edges (MinHash+LSH over symbol bodies, rig/clones.py).
+-- Endpoints are "file:name" keys, like calls. scope ∈ same-file |
+-- same-component | cross-component. Deterministic content — covered by
+-- the canonical hash.
+CREATE TABLE similar(
+  src TEXT NOT NULL,
+  dst TEXT NOT NULL,
+  jaccard REAL NOT NULL,
+  scope TEXT NOT NULL,
+  PRIMARY KEY (src, dst)
 );
 CREATE TABLE artifacts(
   component_id TEXT NOT NULL,
@@ -239,12 +252,12 @@ def add_symbols(db_path: Path, symbols: list[dict]) -> None:
         start = con.execute("SELECT COALESCE(MAX(seq), 0) FROM symbols").fetchone()[0]
         rows = [
             (start + i + 1, s["file"], s["name"], s.get("kind"),
-             s.get("line"), s.get("signature"), s.get("doc"))
+             s.get("line"), s.get("line_end"), s.get("signature"), s.get("doc"))
             for i, s in enumerate(symbols)
         ]
         con.executemany(
-            "INSERT INTO symbols(seq, file, name, kind, line, signature, doc) "
-            "VALUES (?,?,?,?,?,?,?)", rows)
+            "INSERT INTO symbols(seq, file, name, kind, line, line_end, signature, doc) "
+            "VALUES (?,?,?,?,?,?,?,?)", rows)
         con.commit()
         if _fts5_available(con):
             con.execute("INSERT INTO symbols_fts(symbols_fts) VALUES('rebuild')")
@@ -271,6 +284,24 @@ def add_files(db_path: Path, files: list[dict]) -> None:
         con.close()
 
 
+def add_similar(db_path: Path, rows: list[dict]) -> None:
+    """Store near-clone edges (src/dst/jaccard/scope dicts).
+
+    Caller pre-sorts; PRIMARY KEY dedups; INSERT OR IGNORE makes reruns
+    idempotent. Content is deterministic (rig/clones.py), so the canonical
+    hash stays stable.
+    """
+    con = sqlite3.connect(db_path)
+    try:
+        con.executemany(
+            "INSERT OR IGNORE INTO similar(src, dst, jaccard, scope) VALUES (?,?,?,?)",
+            [(r["src"], r["dst"], r["jaccard"], r["scope"]) for r in rows])
+        con.commit()
+        con.execute("VACUUM")
+    finally:
+        con.close()
+
+
 def add_archmap(db_path: Path, graph: dict) -> None:
     """Ingest an archmap graph.json (files/decls/calls) into symbols + calls.
 
@@ -286,6 +317,7 @@ def add_archmap(db_path: Path, graph: dict) -> None:
             "name": d.get("name", ""),
             "kind": d.get("kind", ""),
             "line": d.get("line"),
+            "line_end": d.get("line_end"),
             "signature": d.get("signature") or d.get("name", ""),
             "doc": d.get("doc"),
         })
@@ -428,6 +460,7 @@ def load_rig(path: Path) -> dict:
 
 CANONICAL_TABLES = [
     "meta", "components", "deps", "files", "component_files", "symbols", "calls",
+    "similar",
     "artifacts", "packages", "component_packages", "evidence", "component_evidence",
     "aggregators", "aggregator_deps", "aggregator_evidence",
     "runners", "runner_deps", "runner_evidence",
