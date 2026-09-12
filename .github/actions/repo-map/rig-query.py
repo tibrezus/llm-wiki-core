@@ -427,9 +427,10 @@ def brief_rows(con, diff_text: str,
     has_calls = _has_call_data(con)
     orphans: list[dict] = []
     if has_calls:
+        touched_set = set(touched_keys)
         dead_by_key = {f"{d['file']}:{d['name']}": d for d in (dead_rows(con) or [])}
         orphans = [dead_by_key[k] for k in sorted(dead_by_key)
-                   if k in set(touched_keys)]
+                   if k in touched_set]
 
     clones: list[dict] = []
     seen_pairs: set[tuple[str, str]] = set()

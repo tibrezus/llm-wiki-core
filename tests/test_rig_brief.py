@@ -219,6 +219,17 @@ class TestBriefContract(unittest.TestCase):
             out = rq.brief_rows(b.con, "")
             self.assertEqual(out["exit"], 0)
 
+    def test_unknown_provenance_reported_honestly(self):
+        # db emitted before source_sha existed → brief cannot verify
+        # freshness; it must say so, not claim "fresh"
+        with _Brief() as b:
+            b.con.execute("DELETE FROM meta WHERE key='source_sha'")
+            b.con.commit()
+            out = rq.brief_rows(b.con, _DIFF_FFI, expect_sha="abc123")
+            self.assertFalse(out["provenance"]["stale"])
+            self.assertFalse(out["provenance"]["known"])
+            self.assertIn("unknown", rq._render_brief(out))
+
     def test_no_call_data_honest_refusal(self):
         with _Brief() as b:
             b.con.execute("DELETE FROM calls")
