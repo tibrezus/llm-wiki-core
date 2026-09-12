@@ -211,11 +211,17 @@ def main():
     from rig.clones import compute_and_store
     n_similar = compute_and_store(db_path, source_root)
 
+    # Call edges, regex-v1 (symbols → bodies → resolved edges; meta tag
+    # records provenance). Same single emit pass; archmap supersedes it
+    # where present. This is what gives impact/dead/trace their fan-in.
+    from rig.calls import compute_and_store as compute_calls
+    n_calls = compute_calls(db_path, source_root)
+
     n_components = len(rig["components"])
     n_files = sum(len(c.get("source_files", [])) for c in rig["components"])
     print(f"[emit-rig] rig.db: {db_path} "
           f"({n_components} components, {n_files} files, {len(syms)} symbols, "
-          f"{n_similar} clone edges)",
+          f"{n_calls} call edges, {n_similar} clone edges)",
           file=sys.stderr)
 
     total_edges = sum(len(c.get("depends_on_ids", [])) for c in rig["components"])

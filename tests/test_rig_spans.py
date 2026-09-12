@@ -123,6 +123,9 @@ class TestZigSpans(unittest.TestCase):
 
 class TestCSpans(unittest.TestCase):
     def test_prototype_vs_definition(self):
+        # llm-wiki-core#17: a prototype is a declaration, not an export —
+        # same doctrine as the zig re-export rule (#4). Only the
+        # brace-bearing definition extracts.
         spans = _spans("""\
             int proto(int x);
 
@@ -131,8 +134,26 @@ class TestCSpans(unittest.TestCase):
                 return x + 1;
             }
             """, "c")
-        self.assertEqual(spans[0], (1, 1, "fn proto"))
-        self.assertEqual(spans[1], (3, 6, "fn real"))
+        self.assertEqual(spans, [(3, 6, "fn real")])
+
+    def test_call_line_inside_body_is_not_a_symbol(self):
+        # uncapped extraction made bare call lines phantom "fns" (the
+        # majority of the C table on rhesadox) — a call is a reference.
+        spans = _spans("""\
+            int real(int x)
+            {
+                cudaDeviceSynchronize(s);
+                return x;
+            }
+            """, "cuda")
+        self.assertEqual(spans, [(1, 5, "fn real")])
+
+    def test_multiline_prototype_not_extracted(self):
+        spans = _spans("""\
+            extern "C" int rhesadox_rec_pick_victim(
+                struct Rec* r, int stream);
+            """, "c")
+        self.assertEqual(spans, [])
 
 
 class TestParityShape(unittest.TestCase):
