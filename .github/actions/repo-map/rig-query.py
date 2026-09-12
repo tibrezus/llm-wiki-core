@@ -294,13 +294,12 @@ def parse_diff_spans(diff_text: str) -> list[tuple[str, int, int]]:
     return spans
 
 
-def impact_rows(con, diff_text: str, depth: int = 3,
-                top: int = 10) -> list[dict]:
-    """Map diff hunks to symbols, then blast radius + deterministic risk.
+def touched_symbol_rows(con, diff_text: str) -> list[dict]:
+    """Symbols whose [line, line_end] span intersects any added-side hunk.
 
-    Risk: high — touches cross-component hops or fan-in ≥ 5; medium — has
-    inbound callers or outbound reach; low — isolated. Dead symbols (no
-    callers, no reach) floor at low by definition: nothing can break.
+    The single hunk→symbol mapping (used by impact ranking and by rig brief
+    for orphan/clone intersection) — rows: file, name, kind, line, line_end,
+    component_id, key.
     """
     touched: dict[str, dict] = {}
     for path, start, end in parse_diff_spans(diff_text):
@@ -312,6 +311,20 @@ def impact_rows(con, diff_text: str, depth: int = 3,
                 "  AND COALESCE(s.line_end, s.line) >= ?",
                 (path, end, start)):
             touched[f"{s['file']}:{s['name']}"] = dict(s)
+    return list(touched.values())
+
+
+def impact_rows(con, diff_text: str, depth: int = 3,
+                top: int = 10) -> list[dict]:
+    """Map diff hunks to symbols, then blast radius + deterministic risk.
+
+    Risk: high — touches cross-component hops or fan-in ≥ 5; medium — has
+    inbound callers or outbound reach; low — isolated. Dead symbols (no
+    callers, no reach) floor at low by definition: nothing can break.
+    """
+    touched_rows = touched_symbol_rows(con, diff_text)
+    touched: dict[str, dict] = {f"{s['file']}:{s['name']}": s
+                                for s in touched_rows}
     if not touched:
         return []
 
@@ -375,6 +388,147 @@ def cmd_impact(con, args) -> None:
         print("note: calls table is empty (archmap data absent) — "
               "risk covers touched symbols only, no blast radius")
     _out(rows, args.json, f"touched symbols by risk ({len(rows)}):" if rows else "")
+
+
+# ── Brief — the one-call review orientation (llm-wiki-core#18) ──────
+
+_BRIEF_CAP = 3000
+
+
+def brief_rows(con, diff_text: str,
+               expect_sha: str | None = None) -> dict:
+    """Assemble the one-call review orientation. Pure: returns the sections,
+    the exit code, and nothing printed.
+
+    Sections, in fixed order: provenance (graph freshness), touched
+    (files → components + coverage gaps), risk (impact ranking),
+    orphaned (new exports with zero callers), clones (near-clone edges
+    touching touched code). Exit: 3 stale graph (freshness first — the
+    consumer should re-emit, not review a stale graph); 1 findings;
+    0 clean. Honest refusals: empty calls table degrades the orphan
+    section to a note, never silent zeros.
+    """
+    meta = {r["key"]: r["value"] for r in con.execute("SELECT * FROM meta")}
+    stale = bool(expect_sha and meta.get("source_sha")
+                 and meta["source_sha"] != expect_sha)
+
+    spans = parse_diff_spans(diff_text)
+    diff_files = sorted({f for f, _s, _e in spans})
+    comp_of_file = dict(con.execute("SELECT path, component_id FROM files"))
+    comp_name = dict(con.execute("SELECT id, name FROM components"))
+    touched_comps = sorted({comp_name[cid] for f in diff_files
+                            if (cid := comp_of_file.get(f))})
+    outside = [f for f in diff_files if f not in comp_of_file]
+
+    impacts = impact_rows(con, diff_text)
+    touched_full = touched_symbol_rows(con, diff_text)
+    touched_keys = sorted({f"{s['file']}:{s['name']}" for s in touched_full})
+
+    has_calls = _has_call_data(con)
+    orphans: list[dict] = []
+    if has_calls:
+        touched_set = set(touched_keys)
+        dead_by_key = {f"{d['file']}:{d['name']}": d for d in (dead_rows(con) or [])}
+        orphans = [dead_by_key[k] for k in sorted(dead_by_key)
+                   if k in touched_set]
+
+    clones: list[dict] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for key in touched_keys:
+        for c in clone_rows(con, key, top=5):
+            pair = tuple(sorted((key, c["match"])))
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+            clones.append({"symbol": key, **c})
+
+    counts = {
+        "components": con.execute("SELECT COUNT(*) FROM components").fetchone()[0],
+        "symbols": con.execute("SELECT COUNT(*) FROM symbols").fetchone()[0],
+    }
+    findings = bool(impacts or orphans or clones or outside)
+    code = 3 if stale else (1 if findings else 0)
+    return {
+        "repo": meta.get("repo_name", "?"),
+        "counts": counts,
+        "calls_source": meta.get("calls_source") if has_calls else None,
+        "provenance": {
+            "source_sha": meta.get("source_sha"),
+            "expect_sha": expect_sha,
+            "stale": stale,
+            "known": bool(meta.get("source_sha")),
+        },
+        "touched": {"files": diff_files, "components": touched_comps,
+                    "outside_components": outside},
+        "risk": impacts,
+        "orphaned": orphans,
+        "clones": clones,
+        "exit": code,
+    }
+
+
+def _render_brief(b: dict, cap: int = _BRIEF_CAP) -> str:
+    """Human text, hard-capped: a triage instrument, not a report."""
+    lines: list[str] = []
+    p = b["provenance"]
+    calls = f"calls: {b['calls_source']}" if b["calls_source"] else "calls: empty"
+    lines.append(f"# brief: {b['repo']} — {b['counts']['components']} comps, "
+                 f"{b['counts']['symbols']} syms, {calls}")
+    if p["stale"]:
+        lines.append(f"# provenance: STALE — graph @ {p['source_sha']}, "
+                     f"expected {p['expect_sha']} → re-emit before reviewing")
+    elif not p["known"]:
+        lines.append("# provenance: unknown (emit predates source_sha) — "
+                     "verify the wiki checkout freshness yourself")
+    else:
+        lines.append(f"# provenance: graph @ {p['source_sha']} — fresh")
+    t = b["touched"]
+    line = (f"touched: {len(t['files'])} files → {len(t['components'])} "
+            f"components"
+            + (f": {', '.join(t['components'])}" if t["components"] else ""))
+    lines.append(line)
+    for f in t["outside_components"]:
+        lines.append(f"  WARN outside any component: {f}")
+    if b["risk"]:
+        lines.append(f"risk ({len(b['risk'])}):")
+        for r in b["risk"]:
+            lines.append(f"  {r['risk'].upper():5} {r['file']}:{r['name']}  "
+                         f"fan_in={r['fan_in']} reach={r['reach']} "
+                         f"hops={r['cross_component_hops']}")
+    elif t["files"]:
+        lines.append("risk: no symbols matched the diff hunks")
+    if not b["calls_source"]:
+        lines.append("orphaned: call graph empty — dead detection unavailable")
+    elif b["orphaned"]:
+        lines.append(f"orphaned new exports ({len(b['orphaned'])}):")
+        for d in b["orphaned"]:
+            lines.append(f"  {d['file']}:{d['name']}  {d['reason']}")
+    else:
+        lines.append("orphaned: none among touched symbols")
+    if b["clones"]:
+        lines.append(f"near-clones ({len(b['clones'])}):")
+        for c in b["clones"]:
+            lines.append(f"  {c['symbol']} ~ {c['match']}  "
+                         f"j={c['jaccard']:.2f} {c['scope']}")
+    lines.append("next: rig impact --diff - · rig trace <a> <b> · "
+                 "rig dead <comp> · rig clones <sym> · rig component <name>")
+    while sum(len(l) + 1 for l in lines) > cap and len(lines) > 4:
+        del lines[-2]  # drop from the tail, keep the header + next-menu
+    if sum(len(l) + 1 for l in lines) > cap:
+        lines[-2] = "… (use --json)"
+    return "\n".join(lines)
+
+
+def cmd_brief(con, args) -> int:
+    diff_text = (sys.stdin.read() if args.diff == "-"
+                 else Path(args.diff).read_text(encoding="utf-8",
+                                                errors="replace"))
+    b = brief_rows(con, diff_text, args.expect_sha)
+    if args.json:
+        print(json.dumps(b, indent=2))
+    else:
+        print(_render_brief(b, args.cap))
+    return b["exit"]
 
 
 # ── Trace — call paths between two symbols ──────────────────────────
@@ -487,17 +641,28 @@ def main() -> None:
     p = sub.add_parser("trace", help="call paths between two symbols")
     p.add_argument("a", help="symbol ('file:name' or bare name)")
     p.add_argument("b", help="symbol ('file:name' or bare name)")
+    p = sub.add_parser("brief", help="one-call review orientation "
+                                    "(diff → provenance, risk, orphans, clones)")
+    p.add_argument("--diff", required=True,
+                   help="unified diff path, or '-' for stdin")
+    p.add_argument("--expect-sha", default=None,
+                   help="PR head SHA; graph mismatch → exit 3 (stale)")
+    p.add_argument("--cap", type=int, default=_BRIEF_CAP,
+                   help="text output char cap (default 3000)")
 
     args = parser.parse_args()
     con = _connect(args.db)
     try:
-        {"overview": cmd_overview, "component": cmd_component,
-         "deps": cmd_deps, "files": cmd_files,
-         "search": cmd_search, "calls": cmd_calls,
-         "dead": cmd_dead, "clones": cmd_clones,
-         "impact": cmd_impact, "trace": cmd_trace}[args.cmd](con, args)
+        rc = {"overview": cmd_overview, "component": cmd_component,
+              "deps": cmd_deps, "files": cmd_files,
+              "search": cmd_search, "calls": cmd_calls,
+              "dead": cmd_dead, "clones": cmd_clones,
+              "impact": cmd_impact, "trace": cmd_trace,
+              "brief": cmd_brief}[args.cmd](con, args)
     finally:
         con.close()
+    if rc:
+        sys.exit(rc)
 
 
 if __name__ == "__main__":

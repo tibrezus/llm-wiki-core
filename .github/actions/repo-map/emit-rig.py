@@ -116,6 +116,9 @@ def main():
     parser.add_argument("output", help="Output rig.db path")
     parser.add_argument("--language", default=None, help="Language hint (auto-detected if omitted)")
     parser.add_argument("--no-validate", action="store_true", help="Skip validation")
+    parser.add_argument("--source-sha", default=None,
+                        help="Source commit the graph was emitted at (stored in "
+                             "meta.source_sha; rig brief uses it for freshness)")
     args = parser.parse_args()
 
     builder = RIGBuilder()
@@ -176,6 +179,8 @@ def main():
     if db_path.suffix != ".db":
         db_path = db_path.with_suffix(".db")
     rig_db.write_db(rig, db_path)
+    if args.source_sha:
+        rig_db.set_meta(db_path, "source_sha", args.source_sha)
     source_root = Path(".").resolve()
     syms = rig_symbols.extract_symbols(rig, source_root)
     rig_db.add_symbols(db_path, syms)
