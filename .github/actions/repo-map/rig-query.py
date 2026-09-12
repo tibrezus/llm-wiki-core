@@ -12,12 +12,17 @@ Usage:
     rig-query.py <rig.db> files <glob-pattern>
     rig-query.py <rig.db> search <fts5-query>     # symbol search (name/doc)
     rig-query.py <rig.db> calls <name>            # if archmap calls present
+    rig-query.py <rig.db> dead [component]        # zero-caller exports
+    rig-query.py <rig.db> clones [symbol] [--top N]  # near-clone pairs
+    rig-query.py <rig.db> impact --diff <patch|->    # diff → touched symbols + risk
+    rig-query.py <rig.db> trace <a> <b>           # call paths between symbols
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -172,6 +177,287 @@ def cmd_calls(con, args) -> None:
     _out([dict(r) for r in rows], args.json)
 
 
+# ── Dead exports — zero-caller exported symbols ──────────────────────
+#
+# Two-tier honesty: in an entrypoint component (binary / main service) an
+# exported symbol nobody calls is dead ('no-callers'); in a library
+# component cross-repo callers are invisible to a per-repo graph, so it is
+# only 'exported-unreferenced'. Requires call data (archmap); with an
+# empty calls table we refuse to guess.
+
+_DEAD_NAME_MARKERS = ("main", "__main__")
+_DEAD_SUFFIX_MARKERS = ("handler", "listener", "callback", "_test", "test_")
+
+
+def _has_call_data(con) -> bool:
+    return con.execute("SELECT COUNT(*) FROM calls").fetchone()[0] > 0
+
+
+def dead_rows(con, component: str | None = None) -> list[dict] | None:
+    """Zero-caller exported symbols. None ⇒ no call graph available."""
+    if not _has_call_data(con):
+        return None
+    where, params = "", []
+    if component:
+        cid = _resolve(con, component)
+        if not cid:
+            return []
+        where, params = "WHERE f.component_id = ?", [cid]
+    inbound: dict[str, int] = dict(con.execute(
+        "SELECT callee, COUNT(*) FROM calls GROUP BY callee"))
+    rows = con.execute(
+        "SELECT s.file, s.name, s.kind, s.line, s.line_end, s.signature, "
+        "       c.entrypoint, c.name AS component, c.id AS component_id "
+        "FROM symbols s "
+        "LEFT JOIN files f ON f.path = s.file "
+        "LEFT JOIN components c ON c.id = f.component_id "
+        + where + " ORDER BY s.file, s.line", params).fetchall()
+    out = []
+    for s in rows:
+        name = s["name"]
+        if s["kind"] == "test":
+            continue
+        low = name.lower()
+        if name in _DEAD_NAME_MARKERS or low.endswith(_DEAD_SUFFIX_MARKERS) \
+                or low.startswith("test_"):
+            continue
+        if inbound.get(f"{s['file']}:{name}"):
+            continue
+        out.append({
+            "file": s["file"], "name": name, "line": s["line"],
+            "component": s["component"],
+            "reason": ("no-callers" if s["entrypoint"]
+                       else "exported-unreferenced"),
+        })
+    return out
+
+
+def cmd_dead(con, args) -> None:
+    rows = dead_rows(con, args.component)
+    if rows is None:
+        print("note: calls table is empty (archmap data absent) — "
+              "dead detection needs a call graph; refusing to guess")
+        return
+    _out(rows, args.json, f"dead/unused exports ({len(rows)}):" if rows else "")
+
+
+# ── Near-clone edges ─────────────────────────────────────────────────
+
+def clone_rows(con, ident: str | None = None,
+               top: int = 20) -> list[dict]:
+    """Near-clone pairs (similar table), for one symbol or the top of the repo."""
+    if ident:
+        exact = con.execute(
+            "SELECT file, name FROM symbols WHERE name = ? ORDER BY seq LIMIT 1",
+            (ident,)).fetchone()
+        keys = {f"{exact['file']}:{exact['name']}"} if exact else {ident}
+        rows = []
+        for key in keys:
+            for r in con.execute(
+                    "SELECT src, dst, jaccard, scope FROM similar "
+                    "WHERE src = ? OR dst = ? ORDER BY jaccard DESC", (key, key)):
+                other = r["dst"] if r["src"] == key else r["src"]
+                rows.append({"match": other, "jaccard": r["jaccard"],
+                             "scope": r["scope"]})
+        return rows
+    return [dict(r) for r in con.execute(
+        "SELECT src, dst, jaccard, scope FROM similar "
+        "ORDER BY jaccard DESC, src LIMIT ?", (top,))]
+
+
+def cmd_clones(con, args) -> None:
+    rows = clone_rows(con, args.symbol, args.top)
+    _out(rows, args.json, f"near-clone pairs ({len(rows)}):" if rows and not args.symbol else "")
+
+
+# ── Diff impact — hunks → symbols → blast radius + risk ─────────────
+
+_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @")
+
+
+def parse_diff_spans(diff_text: str) -> list[tuple[str, int, int]]:
+    """[(file, start, end)] on the new side of a unified diff."""
+    spans: list[tuple[str, int, int]] = []
+    path = None
+    for line in diff_text.splitlines():
+        if line.startswith("+++ "):
+            path = line[4:].split("\t")[0].strip()
+            if path.startswith("b/"):
+                path = path[2:]
+        elif line.startswith("@@") and path:
+            m = _HUNK_RE.search(line)
+            if m:
+                start = int(m.group(1))
+                count = int(m.group(2) or "1")
+                if count:
+                    spans.append((path, start, start + count - 1))
+    return spans
+
+
+def impact_rows(con, diff_text: str, depth: int = 3,
+                top: int = 10) -> list[dict]:
+    """Map diff hunks to symbols, then blast radius + deterministic risk.
+
+    Risk: high — touches cross-component hops or fan-in ≥ 5; medium — has
+    inbound callers or outbound reach; low — isolated. Dead symbols (no
+    callers, no reach) floor at low by definition: nothing can break.
+    """
+    touched: dict[str, dict] = {}
+    for path, start, end in parse_diff_spans(diff_text):
+        for s in con.execute(
+                "SELECT s.file, s.name, s.kind, s.line, s.line_end, "
+                "       f.component_id "
+                "FROM symbols s LEFT JOIN files f ON f.path = s.file "
+                "WHERE s.file = ? AND s.line <= ? "
+                "  AND COALESCE(s.line_end, s.line) >= ?",
+                (path, end, start)):
+            touched[f"{s['file']}:{s['name']}"] = dict(s)
+    if not touched:
+        return []
+
+    out_adj: dict[str, list[str]] = {}
+    in_deg: dict[str, int] = {}
+    for r in con.execute("SELECT caller, callee FROM calls"):
+        out_adj.setdefault(r["caller"], []).append(r["callee"])
+        in_deg[r["callee"]] = in_deg.get(r["callee"], 0) + 1
+    comp_of = dict(con.execute("SELECT path, component_id FROM files"))
+
+    results = []
+    for key, s in touched.items():
+        # outbound closure, depth-limited
+        seen, frontier, cross = {key}, {key}, 0
+        my_comp = s["component_id"]
+        for _ in range(depth):
+            nxt: set[str] = set()
+            for node in frontier:
+                for nb in out_adj.get(node, ()):
+                    if nb not in seen:
+                        seen.add(nb)
+                        nxt.add(nb)
+                        nb_file = nb.split(":", 1)[0]
+                        if comp_of.get(nb_file) and comp_of[nb_file] != my_comp:
+                            cross += 1
+            frontier = nxt
+            if not frontier:
+                break
+        fan_in = in_deg.get(key, 0)
+        reasons = []
+        if cross:
+            reasons.append(f"{cross} cross-component hop(s)")
+        if fan_in:
+            reasons.append(f"fan-in {fan_in}")
+        if len(seen) > 1:
+            reasons.append(f"reach {len(seen) - 1}")
+        if fan_in >= 5 or cross:
+            risk = "high"
+        elif fan_in or len(seen) > 1:
+            risk = "medium"
+        else:
+            risk = "low"
+            reasons.append("no callers in graph")
+        results.append({
+            "file": s["file"], "name": s["name"], "line": s["line"],
+            "risk": risk, "fan_in": fan_in, "reach": len(seen) - 1,
+            "cross_component_hops": cross, "reasons": "; ".join(reasons),
+        })
+    rank = {"high": 0, "medium": 1, "low": 2}
+    results.sort(key=lambda r: (rank[r["risk"]], -r["fan_in"],
+                                r["file"], r["line"] or 0))
+    return results[:top]
+
+
+def cmd_impact(con, args) -> None:
+    diff_text = (sys.stdin.read() if args.diff == "-"
+                 else Path(args.diff).read_text(encoding="utf-8",
+                                                errors="replace"))
+    rows = impact_rows(con, diff_text)
+    if not _has_call_data(con):
+        print("note: calls table is empty (archmap data absent) — "
+              "risk covers touched symbols only, no blast radius")
+    _out(rows, args.json, f"touched symbols by risk ({len(rows)}):" if rows else "")
+
+
+# ── Trace — call paths between two symbols ──────────────────────────
+
+def _symbol_key(con, ident: str) -> str | None:
+    if ":" in ident:
+        return ident
+    row = con.execute(
+        "SELECT file, name FROM symbols WHERE name = ? ORDER BY seq LIMIT 1",
+        (ident,)).fetchone()
+    return f"{row['file']}:{row['name']}" if row else None
+
+
+def trace_paths(con, a: str, b: str, depth: int = 5,
+                max_paths: int = 3) -> list[dict]:
+    """Shortest call paths between two symbols ("file:name" or bare name).
+
+    Tries a → b over outbound calls; if none, tries b → a and reports the
+    paths reversed. BFS with predecessor reconstruction; up to max_paths
+    shortest paths, deterministic order.
+    """
+    ka, kb = _symbol_key(con, a), _symbol_key(con, b)
+    if not ka or not kb:
+        return []
+    out_adj: dict[str, list[str]] = {}
+    for r in con.execute("SELECT caller, callee FROM calls"):
+        out_adj.setdefault(r["caller"], []).append(r["callee"])
+
+    def shortest(src: str, dst: str) -> list[list[str]] | None:
+        dist: dict[str, int] = {src: 0}
+        frontier = [src]
+        for d in range(1, depth + 1):
+            nxt: list[str] = []
+            for node in frontier:
+                for nb in out_adj.get(node, ()):
+                    if nb not in dist:
+                        dist[nb] = d
+                        nxt.append(nb)
+            if dst in dist:
+                break
+            frontier = nxt
+        if dst not in dist:
+            return None
+        # predecessors at exactly dist-1, deterministic order
+        rev: dict[str, list[str]] = {}
+        for caller_ in sorted(out_adj):
+            for nb in sorted(out_adj[caller_]):
+                if nb in dist and dist.get(caller_, depth + 1) == dist[nb] - 1:
+                    rev.setdefault(nb, []).append(caller_)
+
+        paths: list[list[str]] = []
+
+        def walk(node: str, acc: list[str]) -> None:
+            if len(paths) >= max_paths:
+                return
+            if node == src:
+                paths.append([src] + acc)
+                return
+            for p in rev.get(node, []):
+                walk(p, [node] + acc)
+
+        walk(dst, [])
+        return paths
+
+    paths = shortest(ka, kb)
+    direction = "→"
+    if paths is None:
+        paths = shortest(kb, ka)
+        direction = "←"
+        if paths:
+            paths = [list(reversed(p)) for p in paths]
+    return [{"direction": direction, "length": len(p) - 1, "path": p}
+            for p in (paths or [])][:max_paths]
+
+
+def cmd_trace(con, args) -> None:
+    rows = trace_paths(con, args.a, args.b)
+    if not rows:
+        print("  (no call path found — or calls table empty)")
+        return
+    _out(rows, args.json)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Query a rig.db")
     parser.add_argument("db", help="Path to rig.db")
@@ -190,13 +476,26 @@ def main() -> None:
     p.add_argument("query", help="FTS5 expression, e.g. 'parse' or 'decod*'")
     p = sub.add_parser("calls", help="call edges matching a name (archmap)")
     p.add_argument("name")
+    p = sub.add_parser("dead", help="zero-caller exported symbols (needs call data)")
+    p.add_argument("component", nargs="?", help="limit to a component")
+    p = sub.add_parser("clones", help="near-clone pairs (MinHash+LSH, similar table)")
+    p.add_argument("symbol", nargs="?", help="symbol name or file:name key")
+    p.add_argument("--top", type=int, default=20, help="repo-wide top N pairs")
+    p = sub.add_parser("impact", help="diff → touched symbols, blast radius, risk")
+    p.add_argument("--diff", required=True,
+                   help="unified diff path, or '-' for stdin")
+    p = sub.add_parser("trace", help="call paths between two symbols")
+    p.add_argument("a", help="symbol ('file:name' or bare name)")
+    p.add_argument("b", help="symbol ('file:name' or bare name)")
 
     args = parser.parse_args()
     con = _connect(args.db)
     try:
         {"overview": cmd_overview, "component": cmd_component,
          "deps": cmd_deps, "files": cmd_files,
-         "search": cmd_search, "calls": cmd_calls}[args.cmd](con, args)
+         "search": cmd_search, "calls": cmd_calls,
+         "dead": cmd_dead, "clones": cmd_clones,
+         "impact": cmd_impact, "trace": cmd_trace}[args.cmd](con, args)
     finally:
         con.close()
 

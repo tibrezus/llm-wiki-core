@@ -206,10 +206,16 @@ def main():
                 continue
     rig_db.add_files(db_path, file_rows)
 
+    # Near-clone edges (MinHash+LSH over symbol bodies) — same pass, no
+    # extra CI job; deterministic, so the canonical hash covers it.
+    from rig.clones import compute_and_store
+    n_similar = compute_and_store(db_path, source_root)
+
     n_components = len(rig["components"])
     n_files = sum(len(c.get("source_files", [])) for c in rig["components"])
     print(f"[emit-rig] rig.db: {db_path} "
-          f"({n_components} components, {n_files} files, {len(syms)} symbols)",
+          f"({n_components} components, {n_files} files, {len(syms)} symbols, "
+          f"{n_similar} clone edges)",
           file=sys.stderr)
 
     total_edges = sum(len(c.get("depends_on_ids", [])) for c in rig["components"])

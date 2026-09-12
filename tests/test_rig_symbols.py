@@ -14,12 +14,13 @@ from pathlib import Path
 REPO_MAP = Path(__file__).resolve().parent.parent / ".github" / "actions" / "repo-map"
 sys.path.insert(0, str(REPO_MAP))
 
-from rig.symbols import _extract_zig_exports  # noqa: E402
+from rig.symbols import _extract_zig_export_spans  # noqa: E402
 
 
 class TestZigReexportAlias(unittest.TestCase):
     def _names(self, src: str) -> list[str]:
-        return [sig.partition(" ")[2] or sig for _, sig in _extract_zig_exports(src)]
+        return [sig.partition(" ")[2] or sig
+                for _, _, sig in _extract_zig_export_spans(src)]
 
     def test_accessor_alias_skipped(self):
         # the rhesadox #4 case: StDtype re-exported by both converter mains
