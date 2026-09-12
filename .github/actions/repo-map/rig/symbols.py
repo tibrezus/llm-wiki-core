@@ -15,8 +15,13 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-# Caps per file to keep model.c4 readable. A file with 100 exports
+# Display cap per file to keep model.c4 readable. A file with 100 exports
 # would bloat the model without helping an agent find reuse targets.
+# rig.db deliberately does NOT apply it: the symbol table is the query
+# surface, and truncating it hides exactly the symbols a review asks about
+# (rhesadox#2085: the decisive export sat at line 1371 of a 101-function
+# file — past the cap, invisible to every graph query). The cap applies to
+# the model.c4 display path only; extract_symbols passes cap=None.
 _MAX_EXPORTS = 20
 
 # Max lines scanned when computing a symbol's end line (block-end
@@ -44,6 +49,17 @@ _ZIG_REEXPORT_RE = re.compile(
 # clone detector slices symbol bodies without re-parsing language syntax.
 # These are sizing heuristics (strings/comments treated naively) — good
 # enough for ranges, never used for identity.
+
+
+def span_has_open_brace(lines: list[str], start: int, end: int) -> bool:
+    """True when the 1-based inclusive line range [start, end] contains '{'.
+
+    The definition test for C-family spans (a definition owns a body; a
+    prototype or a bare call line does not). Shared by the extractor and
+    by rig/calls.py, which must not bind edges to declaration rows from
+    other sources (archmap).
+    """
+    return any("{" in l for l in lines[max(0, start - 1):min(len(lines), end)])
 
 
 def _delim_block_end(lines: list[str], start: int,
@@ -197,7 +213,7 @@ def extract_doc_comment(filepath: Path, language: str) -> str:
 
 # ── Exported symbol extraction ────────────────────────────────────────
 
-def _extract_go_export_spans(raw: str) -> list[tuple[int, int, str]]:
+def _extract_go_export_spans(raw: str, cap: int = _MAX_EXPORTS) -> list[tuple[int, int, str]]:
     """Exported Go symbols (capitalized func/type/var/const) with end lines."""
     lines = raw.split("\n")
     spans: list[tuple[int, int, str]] = []
@@ -213,12 +229,12 @@ def _extract_go_export_spans(raw: str) -> list[tuple[int, int, str]]:
         # multi-line composite literals; scalars close at themselves
         elif m := re.match(r"^(?:var|const)\s+([A-Z][A-Za-z0-9_]*)", stripped):
             spans.append((lineno, _delim_block_end(lines, lineno), m.group(1)))
-        if len(spans) >= _MAX_EXPORTS:
+        if cap is not None and len(spans) >= cap:
             break
     return spans
 
 
-def _extract_zig_export_spans(raw: str) -> list[tuple[int, int, str]]:
+def _extract_zig_export_spans(raw: str, cap: int = _MAX_EXPORTS) -> list[tuple[int, int, str]]:
     """Exported Zig symbols (pub fn/const/var) with end lines."""
     lines = raw.split("\n")
     spans: list[tuple[int, int, str]] = []
@@ -238,12 +254,12 @@ def _extract_zig_export_spans(raw: str) -> list[tuple[int, int, str]]:
                 spans.append((lineno, end, m.group(1)))
         elif m := re.match(r"^pub\s+var\s+([A-Za-z0-9_]*)", stripped):
             spans.append((lineno, _stmt_end(lines, lineno), f"var {m.group(1)}"))
-        if len(spans) >= _MAX_EXPORTS:
+        if cap is not None and len(spans) >= cap:
             break
     return spans
 
 
-def _extract_python_export_spans(raw: str) -> list[tuple[int, int, str]]:
+def _extract_python_export_spans(raw: str, cap: int = _MAX_EXPORTS) -> list[tuple[int, int, str]]:
     """Module-level Python def/class with end lines (indentation walk)."""
     lines = raw.split("\n")
     spans: list[tuple[int, int, str]] = []
@@ -255,14 +271,21 @@ def _extract_python_export_spans(raw: str) -> list[tuple[int, int, str]]:
                 spans.append((lineno, _python_block_end(lines, lineno), f"def {m.group(1)}"))
             elif m := re.match(r"^class\s+([A-Za-z0-9_]*)", stripped):
                 spans.append((lineno, _python_block_end(lines, lineno), f"class {m.group(1)}"))
-        if len(spans) >= _MAX_EXPORTS:
+        if cap is not None and len(spans) >= cap:
             break
     return spans
 
 
-def _extract_c_export_spans(raw: str) -> list[tuple[int, int, str]]:
-    """C/CUDA function declarations (non-static) with end lines.
-    Prototypes (…) end at their ';'; definitions end at their closing brace."""
+def _extract_c_export_spans(raw: str, cap: int = _MAX_EXPORTS) -> list[tuple[int, int, str]]:
+    """C/CUDA function definitions (non-static) with end lines.
+
+    A span is a DEFINITION only if its range contains a '{': prototypes
+    and bare call lines (`cudaDeviceSynchronize(...)` inside a body) are
+    declarations/references, not exports of this file (llm-wiki-core#17 —
+    uncapped extraction made call-line phantoms the majority of the C
+    symbol table, poisoning fan-in and dead-code reads). Same doctrine as
+    the zig re-export rule (#4): re-publishing/calling is not declaring.
+    """
     lines = raw.split("\n")
     spans: list[tuple[int, int, str]] = []
     for lineno, line in enumerate(lines, 1):
@@ -279,15 +302,17 @@ def _extract_c_export_spans(raw: str) -> list[tuple[int, int, str]]:
                 # Filter out C keywords that appear before '('
                 if name not in ("if", "for", "while", "switch", "return",
                                 "sizeof", "typedef", "extern", "struct"):
-                    if stripped.endswith(";"):
-                        end = lineno  # prototype
-                    else:
-                        # definition: brace end beats the first ';' inside
-                        # the body; multi-line headers end at their ';'
-                        end = max(_stmt_end(lines, lineno),
-                                  _delim_block_end(lines, lineno))
+                    code = stripped.split("//")[0].rstrip()
+                    if code.endswith(";"):
+                        continue  # prototype/call — declaration, not an export
+                    # definition: brace end beats the first ';' inside
+                    # the body; multi-line headers end at their ';'
+                    end = max(_stmt_end(lines, lineno),
+                              _delim_block_end(lines, lineno))
+                    if not span_has_open_brace(lines, lineno, end):
+                        continue  # declaration without body (multi-line proto)
                     spans.append((lineno, end, f"fn {name}"))
-        if len(spans) >= _MAX_EXPORTS:
+        if cap is not None and len(spans) >= cap:
             break
     return spans
 
@@ -301,13 +326,15 @@ def extract_exports(filepath: Path, language: str) -> list[str]:
     return [sym for _line, sym in extract_export_rows(filepath, language)]
 
 
-def extract_export_spans(filepath: Path,
-                         language: str) -> list[tuple[int, int, str]]:
+def extract_export_spans(filepath: Path, language: str,
+                         cap: int | None = _MAX_EXPORTS) -> list[tuple[int, int, str]]:
     """Exported symbols with (start line, end line, "kind name").
 
     End lines are sizing heuristics (brace/paren matching, indentation
     walk, statement scan) — never used for identity, only for diff-hunk
-    mapping and body slicing.
+    mapping and body slicing. `cap=None` extracts every export (the
+    rig.db symbol table); the default cap applies to display surfaces
+    (model.c4) so a 100-export file cannot bloat the model.
     """
     try:
         raw = filepath.read_text(encoding="utf-8", errors="replace")
@@ -315,13 +342,13 @@ def extract_export_spans(filepath: Path,
         return []
 
     if language == "go":
-        return _extract_go_export_spans(raw)
+        return _extract_go_export_spans(raw, cap)
     if language == "zig":
-        return _extract_zig_export_spans(raw)
+        return _extract_zig_export_spans(raw, cap)
     if language == "python":
-        return _extract_python_export_spans(raw)
+        return _extract_python_export_spans(raw, cap)
     if language in ("c", "cuda", "cpp", "c++"):
-        return _extract_c_export_spans(raw)
+        return _extract_c_export_spans(raw, cap)
     return []
 
 
@@ -354,7 +381,9 @@ def extract_symbols(rig: dict, source_root: Path) -> list[dict]:
             if key in seen or not path.is_file():
                 continue
             seen.add(key)
-            for line, end, sig in extract_export_spans(path, lang):
+            # cap=None: the query surface must see every export — the
+            # display cap exists for model.c4 only (see _MAX_EXPORTS).
+            for line, end, sig in extract_export_spans(path, lang, cap=None):
                 kind, _, name = sig.partition(" ")
                 symbols.append({
                     "file": sf,

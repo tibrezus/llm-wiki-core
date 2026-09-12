@@ -84,6 +84,59 @@ class TestRigDb(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.dir = Path(self.tmp.name)
 
+    def test_add_archmap_writes_rows_and_supersedes_provenance(self):
+        # The premium ingestion route (compiler-grade) must land rows
+        # through the single calls writer and supersede the regex-v1
+        # provenance tag — a silent regression here flips what every
+        # impact/dead/trace consumer trusts (llm-wiki-core#19 thread
+        # 3996130706).
+        p = self.dir / "rig.db"
+        rig_db.write_db({"schema_version": "rig-1.0", "repository": {},
+                         "components": [], "external_packages": [],
+                         "entrypoints": [], "evidence": [],
+                         "test_definitions": [], "runners": []}, p)
+        rig_db.set_meta(p, "calls_source", "regex-v1")
+        graph = {
+            "decls": [{"file": "cuda/k.cu", "name": "kernel_launch",
+                       "kind": "fn", "line": 10, "line_end": 20,
+                       "signature": "fn kernel_launch"}],
+            "calls": [{"caller": "src/bridge.zig:ensureDev",
+                       "callee": "cuda/k.cu:kernel_launch"}],
+        }
+        rig_db.add_archmap(p, graph)
+        import sqlite3 as _sq
+        con = _sq.connect(p)
+        try:
+            edges = con.execute("SELECT caller, callee FROM calls").fetchall()
+            src = con.execute(
+                "SELECT value FROM meta WHERE key='calls_source'").fetchone()
+            syms = con.execute(
+                "SELECT COUNT(*) FROM symbols WHERE name='kernel_launch'").fetchone()[0]
+        finally:
+            con.close()
+        self.assertEqual(edges,
+                         [("src/bridge.zig:ensureDev", "cuda/k.cu:kernel_launch")])
+        self.assertEqual(src, ("archmap",))  # supersedes regex-v1
+        self.assertEqual(syms, 1)
+
+    def test_add_archmap_without_calls_keeps_provenance(self):
+        # truthfulness: no archmap call data → the tag must NOT claim it
+        p = self.dir / "rig.db"
+        rig_db.write_db({"schema_version": "rig-1.0", "repository": {},
+                         "components": [], "external_packages": [],
+                         "entrypoints": [], "evidence": [],
+                         "test_definitions": [], "runners": []}, p)
+        rig_db.set_meta(p, "calls_source", "regex-v1")
+        rig_db.add_archmap(p, {"decls": []})
+        import sqlite3 as _sq
+        con = _sq.connect(p)
+        try:
+            src = con.execute(
+                "SELECT value FROM meta WHERE key='calls_source'").fetchone()
+        finally:
+            con.close()
+        self.assertEqual(src, ("regex-v1",))
+
     def test_determinism(self):
         rig = _sample_rig()
         a, b = self.dir / "a.db", self.dir / "b.db"

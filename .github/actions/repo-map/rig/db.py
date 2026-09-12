@@ -302,6 +302,34 @@ def add_similar(db_path: Path, rows: list[dict]) -> None:
         con.close()
 
 
+def set_meta(db_path: Path, key: str, value: str) -> None:
+    """Upsert a meta row (e.g. calls_source provenance)."""
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?,?)",
+                    (key, value))
+        con.commit()
+        con.execute("VACUUM")
+    finally:
+        con.close()
+
+
+def add_call_edges(db_path: Path, edges: list[tuple[str, str]]) -> None:
+    """Insert call edges (endpoints "file:name"). The single writer for the
+    calls table — regex-v1 extraction and archmap ingestion both land here."""
+    if not edges:
+        return
+    con = sqlite3.connect(db_path)
+    try:
+        con.executemany(
+            "INSERT OR IGNORE INTO calls(caller, callee) VALUES (?,?)",
+            edges)
+        con.commit()
+        con.execute("VACUUM")
+    finally:
+        con.close()
+
+
 def add_archmap(db_path: Path, graph: dict) -> None:
     """Ingest an archmap graph.json (files/decls/calls) into symbols + calls.
 
@@ -322,16 +350,11 @@ def add_archmap(db_path: Path, graph: dict) -> None:
             "doc": d.get("doc"),
         })
     add_symbols(db_path, symbols)
-    con = sqlite3.connect(db_path)
-    try:
-        con.executemany(
-            "INSERT OR IGNORE INTO calls(caller, callee) VALUES (?,?)",
-            [(c.get("caller", ""), c.get("callee", ""))
-             for c in graph.get("calls", [])])
-        con.commit()
-        con.execute("VACUUM")
-    finally:
-        con.close()
+    add_call_edges(db_path, [(c.get("caller", ""), c.get("callee", ""))
+                             for c in graph.get("calls", [])])
+    # Provenance: archmap data is compiler-grade; tag supersedes regex-v1.
+    if graph.get("calls"):
+        set_meta(db_path, "calls_source", "archmap")
 
 
 # ── Read ─────────────────────────────────────────────────────────────
