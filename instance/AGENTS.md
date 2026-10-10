@@ -29,7 +29,9 @@ configuration, and which architecture projects are declared (if any).
 │   ├── llm-wiki.md               # Founding pattern document
 │   ├── schemas/                  # JSON Schema for frontmatter + config
 │   ├── scripts/                  # CI pipelines, health checks, arch tooling
-│   └── .markdownlint.yaml        # Shared markdown rules
+│   ├── .markdownlint.yaml        # Shared markdown rules
+│   └── scripts/check-repo-size.sh  # Binary-bloat guard (LFS enforcement)
+├── .gitattributes                # LFS routing (binary files — see Binary Files)
 ├── wiki.config.yml               # Project-specific configuration
 ├── AGENTS.md                     # Copied from .llm-wiki/instance/AGENTS.md
 ├── qmd.yml / package.json        # Generated from wiki.config.yml
@@ -490,6 +492,50 @@ Chronological append-only log:
 - **Summary**: what happened and why
 ```
 
+## Binary Files and Repository Size
+
+**Git never forgets.** Every committed byte is stored forever: a 3 MB binary
+committed 200 times is ~600 MB of history that no later commit can remove. One
+real instance hit exactly this — a ~3 MB CI-regenerated SQLite artifact
+(`rig.db`) committed 222 times — and received an excessive-storage notice from
+the hosting platform. The fix required rewriting all history and recreating
+the repository.
+
+Rules:
+
+1. **Binary files go to git-lfs.** Any non-text file > 512 KB MUST be routed
+   through LFS by a pattern in `.gitattributes`, e.g.:
+
+   ```gitattributes
+   *.db    filter=lfs diff=lfs merge=lfs -text
+   *.sqlite filter=lfs diff=lfs merge=lfs -text
+   *.bin   filter=lfs diff=lfs merge=lfs -text
+   ```
+
+2. **Even LFS has a ceiling.** No single tracked file above 50 MB without
+   explicit human approval — LFS keeps every version too.
+
+3. **Regenerated artifacts should not be committed at all.** If CI or an agent
+   can rebuild the file from `raw/` content (e.g. a SQLite index of the RIG),
+   generate it locally instead of committing it. Prefer `raw/arch/<project>/`
+   JSON (text, diffs well, survives storage incidents) over its binary
+   derivatives.
+
+4. **CI enforces this.** `scripts/check-repo-size.sh` fails the lint pipeline
+   when a large binary is committed without LFS routing; the same script runs
+   locally:
+
+   ```bash
+   bash .llm-wiki/scripts/check-repo-size.sh                # whole tree
+   BASE_REF=origin/main bash .llm-wiki/scripts/check-repo-size.sh   # diff only
+   ```
+
+5. **Never `git lfs migrate` casually.** Migrating converts *historical*
+   versions to LFS objects — LFS stores them uncompressed, so a repo with 200
+   near-identical versions keeps roughly the same footprint. Purge regenerable
+   old versions from history first (then force-push), or the migration solves
+   nothing.
+
 ## What NOT to Do
 
 - **Never modify files in `raw/`** after placement
@@ -527,6 +573,10 @@ If you need to annotate or correct the architecture section, add a separate
 `## Architecture Notes` section instead of editing the generated one.
 
 - **Never skip appending to `log.md`** after any operation
+- **Never commit a large binary without git-lfs routing** — see
+  *Binary Files and Repository Size*; CI fails on this
+- **Never commit a regenerable artifact** (SQLite index, generated bundle)
+  when it can be rebuilt from `raw/`
 - **Never use LikeC4 models in the Generic workflow** — Mermaid only
 - **Never hand-write Mermaid for C4 architecture diagrams** — generate from
   the LikeC4 model via `likec4 gen mermaid`
