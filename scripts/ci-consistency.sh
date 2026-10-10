@@ -33,6 +33,7 @@ trap 'rm -rf "$TMPDIR"' EXIT
 
 # Generate expected files
 generate_gitignore "$TMPDIR"
+generate_gitattributes "$TMPDIR"
 generate_remarkrc "$TMPDIR"
 generate_package_json "$TMPDIR" "$PROJECT_TITLE"
 generate_qmd_yml "$TMPDIR" "$QMD_GLOBAL" "$QMD_ENTITY" "$QMD_CONCEPT" "$QMD_GUIDE" "$QMD_REFERENCE"
@@ -50,7 +51,7 @@ case "$CI_PLATFORM" in
     *)       WARECASE_PATH=".github/workflows/wiki-ci.yml" ;;
 esac
 
-GENERATED_FILES=('.gitignore' '.remarkrc.mjs' 'package.json' 'qmd.yml' "${WARECASE_PATH}")
+GENERATED_FILES=('.gitignore' '.gitattributes' '.remarkrc.mjs' 'package.json' 'qmd.yml' "${WARECASE_PATH}")
 
 # Workflow directories for every platform. Only the configured platform's
 # directory should exist; the others are stale leftovers from a platform

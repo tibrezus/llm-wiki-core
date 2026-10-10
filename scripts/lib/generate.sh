@@ -33,6 +33,120 @@ node_modules/
 EOF
 }
 
+generate_gitattributes() {
+    local dest="$1"
+    # LFS routing for the binary classes a wiki realistically receives.
+    # Git keeps every committed byte forever: a 3 MB binary committed 200x is
+    # ~600 MB of unremovable history. Deliberately NOT routed: svg, json, csv,
+    # ipynb, lock files and all source code — they are text and delta-compress.
+    # Extend via the core module (llm-wiki-core), never per-instance:
+    # ci-consistency.sh fails on drift.
+    cat > "$dest/.gitattributes" <<'EOF'
+# Binary files -> git-lfs (see AGENTS.md > Binary Files and Repository Size).
+# CI enforces this: .llm-wiki/scripts/check-repo-size.sh fails on any tracked
+# binary > 512 KB that is not routed here.
+
+# Images (raster). SVG is text (XML) and stays in git.
+*.png   filter=lfs diff=lfs merge=lfs -text
+*.jpg   filter=lfs diff=lfs merge=lfs -text
+*.jpeg  filter=lfs diff=lfs merge=lfs -text
+*.gif   filter=lfs diff=lfs merge=lfs -text
+*.webp  filter=lfs diff=lfs merge=lfs -text
+*.bmp   filter=lfs diff=lfs merge=lfs -text
+*.tif   filter=lfs diff=lfs merge=lfs -text
+*.tiff  filter=lfs diff=lfs merge=lfs -text
+*.ico   filter=lfs diff=lfs merge=lfs -text
+*.avif  filter=lfs diff=lfs merge=lfs -text
+*.heic  filter=lfs diff=lfs merge=lfs -text
+
+# Documents (papers, specs, spreadsheets)
+*.pdf   filter=lfs diff=lfs merge=lfs -text
+*.docx  filter=lfs diff=lfs merge=lfs -text
+*.xlsx  filter=lfs diff=lfs merge=lfs -text
+*.pptx  filter=lfs diff=lfs merge=lfs -text
+*.odt   filter=lfs diff=lfs merge=lfs -text
+*.ods   filter=lfs diff=lfs merge=lfs -text
+*.odp   filter=lfs diff=lfs merge=lfs -text
+*.epub  filter=lfs diff=lfs merge=lfs -text
+
+# Archives
+*.zip   filter=lfs diff=lfs merge=lfs -text
+*.tar   filter=lfs diff=lfs merge=lfs -text
+*.gz    filter=lfs diff=lfs merge=lfs -text
+*.tgz   filter=lfs diff=lfs merge=lfs -text
+*.bz2   filter=lfs diff=lfs merge=lfs -text
+*.xz    filter=lfs diff=lfs merge=lfs -text
+*.zst   filter=lfs diff=lfs merge=lfs -text
+*.7z    filter=lfs diff=lfs merge=lfs -text
+*.rar   filter=lfs diff=lfs merge=lfs -text
+
+# Databases & binary data
+*.db        filter=lfs diff=lfs merge=lfs -text
+*.sqlite    filter=lfs diff=lfs merge=lfs -text
+*.sqlite3   filter=lfs diff=lfs merge=lfs -text
+*.db-wal    filter=lfs diff=lfs merge=lfs -text
+*.db-shm    filter=lfs diff=lfs merge=lfs -text
+*.parquet   filter=lfs diff=lfs merge=lfs -text
+*.arrow     filter=lfs diff=lfs merge=lfs -text
+*.h5        filter=lfs diff=lfs merge=lfs -text
+*.hdf5      filter=lfs diff=lfs merge=lfs -text
+*.npy       filter=lfs diff=lfs merge=lfs -text
+*.npz       filter=lfs diff=lfs merge=lfs -text
+*.pkl       filter=lfs diff=lfs merge=lfs -text
+
+# ML model weights
+*.onnx         filter=lfs diff=lfs merge=lfs -text
+*.pt           filter=lfs diff=lfs merge=lfs -text
+*.pth          filter=lfs diff=lfs merge=lfs -text
+*.safetensors  filter=lfs diff=lfs merge=lfs -text
+*.gguf         filter=lfs diff=lfs merge=lfs -text
+*.tflite       filter=lfs diff=lfs merge=lfs -text
+*.pb           filter=lfs diff=lfs merge=lfs -text
+*.keras        filter=lfs diff=lfs merge=lfs -text
+
+# Media recordings
+*.mp4   filter=lfs diff=lfs merge=lfs -text
+*.mov   filter=lfs diff=lfs merge=lfs -text
+*.mkv   filter=lfs diff=lfs merge=lfs -text
+*.webm  filter=lfs diff=lfs merge=lfs -text
+*.mp3   filter=lfs diff=lfs merge=lfs -text
+*.wav   filter=lfs diff=lfs merge=lfs -text
+*.ogg   filter=lfs diff=lfs merge=lfs -text
+*.flac  filter=lfs diff=lfs merge=lfs -text
+
+# Executables, libraries, packages
+*.exe       filter=lfs diff=lfs merge=lfs -text
+*.dll       filter=lfs diff=lfs merge=lfs -text
+*.so        filter=lfs diff=lfs merge=lfs -text
+*.dylib     filter=lfs diff=lfs merge=lfs -text
+*.a         filter=lfs diff=lfs merge=lfs -text
+*.o         filter=lfs diff=lfs merge=lfs -text
+*.obj       filter=lfs diff=lfs merge=lfs -text
+*.wasm      filter=lfs diff=lfs merge=lfs -text
+*.deb       filter=lfs diff=lfs merge=lfs -text
+*.rpm       filter=lfs diff=lfs merge=lfs -text
+*.AppImage  filter=lfs diff=lfs merge=lfs -text
+*.dmg       filter=lfs diff=lfs merge=lfs -text
+*.iso       filter=lfs diff=lfs merge=lfs -text
+
+# Fonts
+*.ttf   filter=lfs diff=lfs merge=lfs -text
+*.otf   filter=lfs diff=lfs merge=lfs -text
+*.woff  filter=lfs diff=lfs merge=lfs -text
+*.woff2 filter=lfs diff=lfs merge=lfs -text
+*.eot   filter=lfs diff=lfs merge=lfs -text
+
+# Profiler & design artifacts (CUDA/Nsight traces, design tools)
+*.nsys-rep  filter=lfs diff=lfs merge=lfs -text
+*.ncu-rep   filter=lfs diff=lfs merge=lfs -text
+*.qdrep     filter=lfs diff=lfs merge=lfs -text
+*.qdstrm    filter=lfs diff=lfs merge=lfs -text
+*.vsdx      filter=lfs diff=lfs merge=lfs -text
+*.psd       filter=lfs diff=lfs merge=lfs -text
+*.sketch    filter=lfs diff=lfs merge=lfs -text
+EOF
+}
+
 generate_remarkrc() {
     local dest="$1"
     cat > "$dest/.remarkrc.mjs" <<'EOF'
