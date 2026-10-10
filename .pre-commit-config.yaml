@@ -60,3 +60,10 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+
+      - id: repo-size-guard
+        name: large binaries must be git-lfs tracked
+        entry: bash .llm-wiki/scripts/check-repo-size.sh
+        language: system
+        pass_filenames: false
+        always_run: true
