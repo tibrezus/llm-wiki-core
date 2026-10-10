@@ -110,6 +110,7 @@ generate_pre_commit "$INSTANCE_ROOT" "$INSTANCE_ROOT/.llm-wiki"
 
 # --- Generate files (always regenerated from config) ---
 info "Generating files..."
+generate_gitattributes "$INSTANCE_ROOT"
 
 # Remove stale workflow directories from a previous platform before
 # regenerating. Only the configured platform's directory should survive.

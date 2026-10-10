@@ -504,13 +504,18 @@ the repository.
 Rules:
 
 1. **Binary files go to git-lfs.** Any non-text file > 512 KB MUST be routed
-   through LFS by a pattern in `.gitattributes`, e.g.:
+   through LFS by a pattern in `.gitattributes`. The starter set (images,
+   documents, archives, databases, model weights, media, executables, fonts,
+   profiler artifacts) is **generated** by `bootstrap.sh` / `ci-consistency.sh`
+   — edit it via the core module (`llm-wiki-core`, `scripts/lib/generate.sh`),
+   never per-instance: the consistency check fails on drift. Example pattern:
 
    ```gitattributes
    *.db    filter=lfs diff=lfs merge=lfs -text
-   *.sqlite filter=lfs diff=lfs merge=lfs -text
-   *.bin   filter=lfs diff=lfs merge=lfs -text
    ```
+
+   Deliberately NOT routed: `svg`, `json`, `csv`, `ipynb`, lock files and all
+   source code — they are text and delta-compress.
 
 2. **Even LFS has a ceiling.** No single tracked file above 50 MB without
    explicit human approval — LFS keeps every version too.
