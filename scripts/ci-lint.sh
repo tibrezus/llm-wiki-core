@@ -142,6 +142,13 @@ fi
 echo "OK"
 
 echo ""
+echo "--- repo size guard ---"
+# Binaries must be git-lfs tracked: git keeps every committed byte forever, so
+# a large binary committed N times is N × size of unremovable history.
+# Delegated to its own script (also runnable locally + unit-tested).
+BASE_REF="${base:-}" bash "$SCRIPT_DIR/check-repo-size.sh"
+
+echo ""
 echo "--- wiki health check ---"
 python3 .llm-wiki/scripts/wiki-health.py wiki/
 
