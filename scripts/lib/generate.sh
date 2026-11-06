@@ -30,6 +30,9 @@ generate_gitignore() {
     cat > "$dest/.gitignore" <<'EOF'
 node_modules/
 .obsidian/
+# Regenerated artifacts — never commit (AGENTS.md > Binary Files, rule 3).
+# rig.db is a local build cache: rebuild via .llm-wiki/.github/actions/repo-map/arch-graph.sh
+raw/arch/**/*.db
 EOF
 }
 

@@ -93,6 +93,18 @@ while IFS= read -r f; do
     kb=$(( ( $(wc -c < "$f") + 1023 ) / 1024 ))
     [ "$kb" -gt "$largest_kb" ] && { largest_kb=$kb; largest_path=$f; }
 
+    # Regenerated artifacts — path-based, size-independent. rig.db is the
+    # canonical offender: the arch pipeline re-emits it on every sync, and a
+    # multi-writer repo without universal git-lfs mints plain multi-MB SQLite
+    # blobs that no routing can retract. Rebuild locally via arch-graph.sh.
+    case "$f" in
+        raw/arch/*/rig.db|raw/arch/*/*/rig.db)
+            violations="${violations}${f}  (${kb} KB) is a regenerated artifact — never commit it; rebuild locally via arch-graph.sh"$'\n'
+            errors=$((errors + 1))
+            continue
+            ;;
+    esac
+
     if [ "$kb" -gt $(( HARD_MB * 1024 )) ]; then
         violations="${violations}${f}  (${kb} KB) exceeds HARD_MB=${HARD_MB} MB ceiling"$'\n'
         errors=$((errors + 1))
@@ -102,11 +114,6 @@ while IFS= read -r f; do
     if [ "$kb" -gt "$LARGE_KB" ] && is_binary "$f"; then
         if lfs_match "$f"; then
             echo "  OK (LFS): $f (${kb} KB)"
-            case "$f" in
-                *.db|*.sqlite|*.sqlite3|*.db-wal|*.db-shm)
-                    echo "    ::warning::'$f' looks regenerable — prefer rebuilding it from raw/ instead of committing it (see AGENTS.md > Binary Files, rule 3)"
-                    ;;
-            esac
         else
             violations="${violations}${f}  (${kb} KB) is binary, not LFS-tracked"$'\n'
             errors=$((errors + 1))

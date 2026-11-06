@@ -91,6 +91,27 @@ class RepoSizeGuardTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("OK (LFS)", r.stdout)
 
+    def test_rig_db_hard_fails_even_when_lfs_routed(self):
+        # rig.db is a regenerated artifact: committing it must fail outright,
+        # regardless of LFS routing — a multi-writer repo without universal
+        # git-lfs mints plain multi-MB SQLite blobs that cannot be retracted.
+        self._write(".gitattributes", "*.db filter=lfs diff=lfs merge=lfs -text\n")
+        self._write("raw/arch/rhesadox/rig.db", self._binary(600))
+        self._commit("add rig.db")
+        r = self._run()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("regenerated artifact", r.stdout)
+        self.assertIn("arch-graph.sh", r.stdout)
+
+    def test_small_rig_db_still_hard_fails(self):
+        # Below LARGE_KB, the file wouldn't even be scanned as a large binary;
+        # the regenerated-artifact rule must still catch it.
+        self._write("raw/arch/harmostes/rig.db", self._binary(100))
+        self._commit("add small rig.db")
+        r = self._run()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("regenerated artifact", r.stdout)
+
     def test_hard_ceiling_applies_even_to_lfs(self):
         self._write(".gitattributes", "*.bin filter=lfs diff=lfs merge=lfs -text\n")
         self._write("big.bin", self._binary(1200))
