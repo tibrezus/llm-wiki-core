@@ -299,8 +299,8 @@ Before writing or updating any architecture diagram:
         raw/arch/<project>
    ```
 
-   This regenerates rig.db, model.c4, and the *.mmd views deterministically.
-   Commit only the text derivatives (model.c4, *.mmd); rig.db stays local.
+   This regenerates `rig.db`, `model.c4`, and the `*.mmd` views deterministically.
+   Commit only the text derivatives (`model.c4`, `*.mmd`); `rig.db` stays local.
 2. **Query the graph**: `rig overview` / `rig component <name>` / `rig search '<term>'`
    (pi `rig` tool; else `python3 .llm-wiki/.github/actions/repo-map/rig-query.py
    raw/arch/<project>/rig.db overview`). This is your input —
