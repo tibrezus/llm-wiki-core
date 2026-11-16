@@ -104,12 +104,42 @@ install_mermaid_cli() {
     npm install -g @mermaid-js/mermaid-cli 2>/dev/null || npm install -g @mermaid-js/mermaid-cli
     # Ensure Chromium is installed for Puppeteer (mmdc uses it to render)
     npx puppeteer browsers install chrome 2>/dev/null || true
-    # Install Chrome system dependencies (needed on minimal CI runners)
+    # Chrome system dependencies (needed on minimal CI runners). Two failure
+    # classes hid here, both discovered when the ARC dind runner image
+    # (ghcr.io/actions/actions-runner:latest) drifted to Ubuntu 24.04 and
+    # the render check silently degraded to a skip on every PR
+    # (rezuscloud/llm-wiki#15):
+    #   1. The dind pod runs as ROOT, where `sudo` is not in sudoers — the
+    #      old `sudo apt-get ... || true` never installed anything in CI at
+    #      all (the pre-drift image baked the libs; the refresh removed
+    #      them). Call apt-get directly when already root.
+    #   2. Ubuntu 24.04 (noble) renamed libasound2 in the 64-bit-time_t
+    #      transition, and apt aborts the WHOLE list on one unresolvable
+    #      name — so even with sudo the noble case installed nothing. Pick
+    #      the name the running distro actually ships (t64 era: 24.04+).
+    # The install below is LOUD (no || true): a failed dependency install
+    # must fail this job before validate-mermaid.py can silently skip the
+    # render check. macOS/non-apt hosts skip via the command -v guard.
     if command -v apt-get &>/dev/null; then
-        sudo apt-get update -qq && sudo apt-get install -y -qq \
+        local asound=libasound2 apt
+        grep -qs '^VERSION_ID="2[4-9]' /etc/os-release && asound=libasound2t64
+        if [ "$(id -u)" = "0" ]; then
+            apt="apt-get"
+        elif sudo -n true 2>/dev/null; then
+            apt="sudo -n apt-get"
+        else
+            # Local dev without passwordless sudo: skip loudly, not silently —
+            # the mmdc probe downstream reports honestly if the system lacks
+            # the libs. CI (dind pod, root) always takes the direct path.
+            echo "WARNING: skipping Chrome system deps — sudo unavailable (non-interactive); install ${asound} and friends manually if the render check skips."
+            echo "::endgroup::"
+            return
+        fi
+        $apt update -qq
+        $apt install -y -qq \
             libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libxkbcommon0 \
             libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 \
-            libpango-1.0-0 libcairo2 libasound2 2>/dev/null || true
+            libpango-1.0-0 libcairo2 "$asound"
     fi
     echo "::endgroup::"
 }
