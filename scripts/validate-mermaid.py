@@ -74,6 +74,7 @@ def main():
         env["PUPPETEER_EXECUTABLE_PATH"] = chrome_path
 
     browser_available = False
+    probe_err = "mmdc exited without a diagnostic"
     with tempfile.TemporaryDirectory() as tmpdir:
         probe = Path(tmpdir) / "probe.mmd"
         probe.write_text("graph TD\n  A --> B\n")
@@ -84,13 +85,19 @@ def main():
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env)
             browser_available = r.returncode == 0
-        except Exception:
-            browser_available = False
+            if not browser_available:
+                lines = (r.stderr or r.stdout or "").strip().splitlines()
+                if lines:
+                    probe_err = lines[0]
+        except Exception as e:
+            probe_err = str(e)
 
     if not browser_available:
         print("WARNING: headless browser unavailable — mermaid render check skipped.")
-        print("This is an infrastructure issue (Chrome system libs missing), not a diagram error.")
-        print("Install Chrome/Chromium or its dependencies on the runner to enable render validation.")
+        print("This is an infrastructure issue on the runner, not a diagram error.")
+        print(f"chrome binary: {chrome_path or 'NOT FOUND (puppeteer cache empty and no system chromium)'}")
+        print(f"probe failure: {probe_err}")
+        print("Install Chrome/Chromium and its system libraries on the runner to enable render validation.")
         sys.exit(0)
 
     md_files = sorted(wiki_dir.rglob("*.md"))
