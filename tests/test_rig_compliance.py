@@ -412,3 +412,63 @@ class TestEnhancedValidator(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ──────────────────────────────────────────────────────────────────
+#  `--all` CLI semantics — the artifact-convention contract
+# ──────────────────────────────────────────────────────────────────
+
+class TestAllFlag(unittest.TestCase):
+    """rig-compliance.py --all DIR audits the COMMITTED artifact (rig.json).
+
+    rig.db is the local build cache (gitignored, never reaches CI). The
+    --all glob used to look for rig.db only, so a CI run over an instance
+    whose raw/arch/ carries committed rig.json extracts aborted with
+    "No rig.db files found" + exit 1 — killing the whole lint pipeline
+    (rezuscloud/llm-wiki#15 run, 2026-11-17).
+    """
+
+    def _run_all(self, base: Path) -> subprocess.CompletedProcess:
+        import subprocess
+        return subprocess.run(
+            [sys.executable, str(SCRIPTS_DIR / "rig-compliance.py"),
+             "--all", str(base)],
+            capture_output=True, text=True,
+        )
+
+    def test_audits_committed_rig_json(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            (base / "arch" / "proj").mkdir(parents=True)
+            rig = _base_rig()
+            rig["repository"] = {**rig["repository"], "name": "json-only"}
+            (base / "arch" / "proj" / "rig.json").write_text(json.dumps(rig))
+            result = self._run_all(base)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("json-only", result.stdout)
+            self.assertIn("Found 1 RIG file(s)", result.stdout)
+
+    def test_no_rigs_is_exit_zero_not_abort(self):
+        with tempfile.TemporaryDirectory() as td:
+            result = self._run_all(Path(td))
+            self.assertEqual(result.returncode, 0,
+                             "an empty --all sweep is a no-op, not a failure")
+            self.assertIn("No RIG files found", result.stderr)
+
+    def test_dir_with_both_prefers_json_once(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            proj = base / "arch" / "proj"
+            proj.mkdir(parents=True)
+            rig = _base_rig()
+            rig["repository"] = {**rig["repository"], "name": "dupcheck"}
+            (proj / "rig.json").write_text(json.dumps(rig))
+            _write_rig_to(rig, proj / "rig.db")
+            result = self._run_all(base)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            # deduped: the same graph audited exactly once
+            self.assertEqual(result.stdout.count("dupcheck"), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

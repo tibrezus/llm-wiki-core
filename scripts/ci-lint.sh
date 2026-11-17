@@ -174,13 +174,19 @@ if [ -d raw/arch ]; then
     RIG_COUNT=$(find raw/arch -name 'rig.json' 2>/dev/null | wc -l)
 fi
 if [ "$RIG_COUNT" -gt 0 ]; then
-    python3 .llm-wiki/scripts/arch/rig-compliance.py --all raw/arch/ 2>&1
+    # RC captured via ||: under `set -euo pipefail` a bare assignment after
+    # the command never runs when the python exits non-zero — the pipeline
+    # would abort before the ERROR-level gate below could emit its message.
+    RC=0
+    python3 .llm-wiki/scripts/arch/rig-compliance.py --all raw/arch/ 2>&1 || RC=$?
     # Exit 1 only if the auditor found ERROR-level issues (exit code 1).
     # Exit code 0 = warnings only, 2 = --strict (not used here).
-    RC=$?
     if [ "$RC" -eq 1 ]; then
         echo "::error::RIG compliance audit found structural errors"
         exit 1
+    elif [ "$RC" -ne 0 ]; then
+        echo "::error::RIG compliance audit failed (exit $RC)"
+        exit "$RC"
     fi
     echo "OK ($RIG_COUNT RIG file(s) audited)"
 else
