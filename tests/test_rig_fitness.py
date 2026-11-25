@@ -214,6 +214,28 @@ class TestDuplicationReport(unittest.TestCase):
         self.assertNotIn("get", names)
         self.assertNotIn("parse", names)
 
+    def test_blocked_decide_and_enum_word_idioms_ignored(self):
+        # classify/word: a pure decide function per layer's own verdict type
+        # (dspark OutputKind / gpu_model_bind HostMapVerdict / warm State /
+        # composition Outcome / registry kind) and the enum->word accessor on
+        # distinct enum types (warm.State / diag.SubstVerdict / emap.Verdict /
+        # tune.Verdict — the same idiom as `label`). rhesadox #3033
+        # calibration: P4-P6 landed them one slice at a time and the spread
+        # crossed SEVERE on name-equality alone. No duplication signal.
+        rows = self.rows
+        for name in ("classify", "word"):
+            rows = rows + [
+                {"name": name, "kind": "fn", "signature": f"fn {name}", "file": "a.zig", "component_id": "c1", "language": "zig", "component": "one"},
+                {"name": name, "kind": "fn", "signature": f"fn {name}", "file": "b.zig", "component_id": "c2", "language": "zig", "component": "two"},
+                {"name": name, "kind": "fn", "signature": f"fn {name}", "file": "c.zig", "component_id": "c3", "language": "zig", "component": "three"},
+            ]
+        rep = duplication_report(rows)
+        names = {d["name"] for d in rep["duplicated"]}
+        self.assertNotIn("classify", names)
+        self.assertNotIn("word", names)
+        # the gate keeps its teeth: a non-blocked name at the same spread is severe
+        self.assertEqual([d["name"] for d in rep["severe"]], ["triDup"])
+
 
 class TestRendering(unittest.TestCase):
     def setUp(self):

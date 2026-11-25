@@ -48,8 +48,14 @@ from pathlib import Path
 # .parse are universal method verbs namespaced by their types — the most
 # generic name-equality noise there is. Collection verb (add) same class:
 # Catalog.add / Registry.add / histogram add are unrelated containers.
+# Decide verb + enum-word accessor (classify, word) calibrated on the same
+# repo's #3033: a pure decide function per layer's own verdict type (dspark
+# OutputKind / gpu_model_bind HostMapVerdict / warm State / composition
+# Outcome / registry kind) and the enum->word accessor on distinct enum
+# types (the same idiom as `label`). rhesadox's P4-P6 landed them one slice
+# at a time and the spread crossed SEVERE on name-equality alone.
 BLOCKED_SYMBOL_NAMES = frozenset({
-    "add", "all", "arena", "Builder", "Client", "close", "Config", "contains",
+    "add", "all", "arena", "Builder", "classify", "Client", "close", "Config", "contains",
     "count", "counter", "decode", "deinit", "empty", "encode", "Entry",
     "err", "error", "Error", "eval", "Event", "Events", "Factory", "find",
     "free", "get", "hash",
@@ -60,7 +66,7 @@ BLOCKED_SYMBOL_NAMES = frozenset({
     "record", "Ref", "register", "Registry", "Request", "reset",
     "Response", "Result", "Results", "sample", "scales", "Spec",
     "State", "Status", "store", "stream", "String", "test", "Type",
-    "usage", "Value", "vec", "version",
+    "usage", "Value", "vec", "version", "word",
 })
 
 # A symbol re-declared across this many components (same language) is
